@@ -9,14 +9,14 @@
 
 **Deliverable:** `python test_pipeline.py --image face.jpg` in ra FrameSignal đầy đủ
 
-- [ ] `[P1]` Setup Python 3.12 + uv, cài đủ dependencies
-- [ ] `[P1]` Download và verify 3 model files: `face_landmarker.task`, `6DRepNet_300W_LP_AFLW2000.pth`, `enet_b0_8_best_afew.onnx`
-- [ ] `[P1]` Implement `face_detector.py` — MediaPipe Face Landmarker wrapper, trả về face ROI
-- [ ] `[P1]` Implement `landmark_analyzer.py` — EAR trái/phải, blink detection, gaze zone từ iris landmarks
-- [ ] `[P1]` Implement `pose_estimator.py` — 6DRepNet wrapper, trả về `(yaw, pitch, roll)`
-- [ ] `[P1]` Implement `emotion_classifier.py` — emotiefflib ONNX wrapper, trả về `probs[8]`
-- [ ] `[P1]` Implement `frame_signal.py` — dataclass `FrameSignal`, validate schema
-- [ ] `[P2]` Unit test từng module với ảnh tĩnh
+- [x] `[P1]` Setup Python 3.12 + uv, cài đủ dependencies
+- [x] `[P1]` Download và verify 3 model files: `face_landmarker.task`, `6DRepNet_300W_LP_AFLW2000.pth`, `enet_b0_8_best_afew.onnx`
+- [x] `[P1]` Implement `face_detector.py` — MediaPipe Face Landmarker wrapper, trả về face ROI
+- [x] `[P1]` Implement `landmark_analyzer.py` — EAR trái/phải, blink detection, gaze zone từ iris landmarks
+- [x] `[P1]` Implement `pose_estimator.py` — 6DRepNet wrapper, trả về `(yaw, pitch, roll)`
+- [x] `[P1]` Implement `emotion_classifier.py` — emotiefflib ONNX wrapper, trả về `probs[8]`
+- [x] `[P1]` Implement `frame_signal.py` — dataclass `FrameSignal`, validate schema
+- [x] `[P2]` Unit test từng module với ảnh tĩnh
 
 ---
 
