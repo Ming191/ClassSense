@@ -57,4 +57,8 @@ class EmotionClassifier:
             if src_i is not None and src_i < len(model_probs):
                 probs[std_i] = float(model_probs[src_i])
 
-        return str(emotions[0]).lower(), probs, valence, arousal
+        # Compute dominant emotion as argmax of probabilities to ensure
+        # consistency with emotion_probs (fixes mismatch with library's direct output)
+        emotion_idx = int(np.argmax(probs)) if probs else 5  # default to neutral
+        emotion_label = _DEFAULT_LABELS[emotion_idx]
+        return emotion_label, probs, valence, arousal
