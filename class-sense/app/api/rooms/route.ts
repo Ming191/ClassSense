@@ -3,6 +3,7 @@ import { Prisma } from "@/app/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createRoomCode, toLivekitRoomName } from "@/lib/room-code";
+import { auth } from "@/lib/auth";
 import {
   createRoomBodySchema,
   getValidationErrorMessage,
@@ -16,6 +17,12 @@ function buildDefaultRoomTitle(): string {
 
 export async function POST(request: NextRequest): Promise<Response> {
   try {
+    const session = await auth.api.getSession({ headers: request.headers });
+
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+    }
+
     const rawBody = await request.json().catch(() => null);
 
     if (!rawBody) {
@@ -31,16 +38,30 @@ export async function POST(request: NextRequest): Promise<Response> {
       );
     }
 
-    const hostEmail = parsedBody.data.hostEmail;
-    const hostName = parsedBody.data.hostName ?? hostEmail.split("@")[0];
+    if (
+      parsedBody.data.hostEmail &&
+      parsedBody.data.hostEmail !== session.user.email.toLowerCase()
+    ) {
+      return NextResponse.json(
+        { error: "hostEmail must match the authenticated user email." },
+        { status: 403 }
+      );
+    }
+
+    const hostEmail = session.user.email;
+    const hostName = parsedBody.data.hostName ?? session.user.name ?? hostEmail.split("@")[0];
     const title = parsedBody.data.title ?? buildDefaultRoomTitle();
 
     const hostUser = await prisma.user.upsert({
       where: { email: hostEmail },
-      update: { displayName: hostName },
+      update: {
+        displayName: hostName,
+        emailVerified: session.user.emailVerified,
+      },
       create: {
         email: hostEmail,
         displayName: hostName,
+        emailVerified: session.user.emailVerified,
       },
     });
 

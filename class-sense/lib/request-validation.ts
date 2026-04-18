@@ -20,16 +20,6 @@ function optionalTrimmedString(maxLength: number, fieldName: string) {
     });
 }
 
-function requiredEmailString(fieldName: string) {
-  return z
-    .string()
-    .trim()
-    .toLowerCase()
-    .min(1, `${fieldName} is required.`)
-    .max(MAX_EMAIL_LENGTH, `${fieldName} must be at most ${MAX_EMAIL_LENGTH} characters.`)
-    .email(`${fieldName} must be a valid email.`);
-}
-
 function optionalEmailString(fieldName: string) {
   return z
     .string()
@@ -53,7 +43,7 @@ export const createRoomBodySchema = z
   .object({
     title: optionalTrimmedString(MAX_ROOM_TITLE_LENGTH, "title"),
     hostName: optionalTrimmedString(MAX_PARTICIPANT_NAME_LENGTH, "hostName"),
-    hostEmail: requiredEmailString("hostEmail"),
+    hostEmail: optionalEmailString("hostEmail"),
   })
   .strict();
 

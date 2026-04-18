@@ -1,7 +1,9 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useSession, signOut } from "@/lib/auth-client";
 
 type CreateRoomResponse = {
   room: {
@@ -9,14 +11,19 @@ type CreateRoomResponse = {
   };
 };
 
-function buildRoomUrl(code: string, name: string, email: string): string {
+function buildRoomUrl(
+  code: string,
+  name: string,
+  email: string,
+  options?: { includeEmail?: boolean }
+): string {
   const searchParams = new URLSearchParams();
 
   if (name.trim()) {
     searchParams.set("name", name.trim());
   }
 
-  if (email.trim()) {
+  if (options?.includeEmail !== false && email.trim()) {
     searchParams.set("email", email.trim());
   }
 
@@ -26,6 +33,7 @@ function buildRoomUrl(code: string, name: string, email: string): string {
 
 export default function Home() {
   const router = useRouter();
+  const { data: session, isPending: isSessionPending } = useSession();
   const todayLabel = useMemo(
     () => new Date().toLocaleDateString("en-GB"),
     []
@@ -38,9 +46,25 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
 
+  async function handleSignOut() {
+    setError(null);
+
+    const result = await signOut();
+
+    if (result.error) {
+      setError(result.error.message ?? "Unable to sign out.");
+    }
+  }
+
   async function handleCreateRoom(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
+
+    if (!session?.user) {
+      router.push("/auth?next=%2F");
+      return;
+    }
+
     setIsCreating(true);
 
     try {
@@ -58,11 +82,21 @@ export default function Home() {
 
       if (!response.ok) {
         const payload = (await response.json()) as { error?: string };
+
+        if (response.status === 401) {
+          router.push("/auth?next=%2F");
+          return;
+        }
+
         throw new Error(payload.error ?? "Failed to create room");
       }
 
       const payload = (await response.json()) as CreateRoomResponse;
-      router.push(buildRoomUrl(payload.room.code, name, email));
+      router.push(
+        buildRoomUrl(payload.room.code, name, email, {
+          includeEmail: !session?.user,
+        })
+      );
     } catch (requestError) {
       const message =
         requestError instanceof Error
@@ -83,7 +117,11 @@ export default function Home() {
       return;
     }
 
-    router.push(buildRoomUrl(joinCode.trim().toUpperCase(), name, email));
+    router.push(
+      buildRoomUrl(joinCode.trim().toUpperCase(), name, email, {
+        includeEmail: !session?.user,
+      })
+    );
   }
 
   return (
@@ -93,6 +131,31 @@ export default function Home() {
           <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">
             ClassSense Realtime
           </p>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-600">
+            <p>
+              {isSessionPending
+                ? "Checking auth session..."
+                : session?.user
+                  ? `Signed in as ${session.user.email}`
+                  : "Not signed in"}
+            </p>
+            {session?.user ? (
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Sign out
+              </button>
+            ) : (
+              <Link
+                href="/auth?next=%2F"
+                className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Sign in / Sign up
+              </Link>
+            )}
+          </div>
           <h1 className="mt-4 text-4xl font-semibold tracking-tight text-slate-900 sm:text-5xl">
             Video classroom with live AI attention signals.
           </h1>
@@ -107,6 +170,12 @@ export default function Home() {
           <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
             {error}
           </div>
+        ) : null}
+
+        {!session?.user ? (
+          <section className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-800">
+            You need to sign in before creating rooms. Guests can still join an existing room.
+          </section>
         ) : null}
 
         <section className="grid gap-6 lg:grid-cols-2">
@@ -149,6 +218,7 @@ export default function Home() {
                   className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
                   placeholder="host@classsense.ai"
                   required
+                  disabled={Boolean(session?.user)}
                 />
               </label>
             </div>

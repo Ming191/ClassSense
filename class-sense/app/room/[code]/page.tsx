@@ -22,7 +22,7 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Track } from "livekit-client";
+import { RoomEvent, Track } from "livekit-client";
 
 type RoomTokenPayload = {
   token: string;
@@ -71,16 +71,30 @@ function FilmstripCameraTile({
 }
 
 function RoomStage(): ReactElement {
-  const cameraTracks = useTracks([
-    { source: Track.Source.Camera, withPlaceholder: true },
-  ]);
-  const screenShareCandidate = useTracks([
-    { source: Track.Source.ScreenShare, withPlaceholder: false },
-  ])[0];
-  const primaryTrack =
-    screenShareCandidate && isTrackReference(screenShareCandidate)
+  const tracks = useTracks(
+    [
+      { source: Track.Source.Camera, withPlaceholder: true },
+      { source: Track.Source.ScreenShare, withPlaceholder: false },
+    ],
+    {
+      updateOnlyOn: [RoomEvent.ActiveSpeakersChanged],
+      onlySubscribed: false,
+    }
+  );
+
+  const cameraTracks = useMemo(
+    () => tracks.filter((trackRef) => trackRef.source === Track.Source.Camera),
+    [tracks]
+  );
+
+  const primaryTrack = useMemo(() => {
+    const screenShareCandidate = tracks.find(
+      (trackRef) => trackRef.source === Track.Source.ScreenShare
+    );
+    return screenShareCandidate && isTrackReference(screenShareCandidate)
       ? screenShareCandidate
       : null;
+  }, [tracks]);
 
   const stageRef = useRef<HTMLElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);

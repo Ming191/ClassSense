@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { AccessToken } from "livekit-server-sdk";
 import { prisma } from "@/lib/prisma";
 import { buildGuestEmail } from "@/lib/request-input";
+import { auth } from "@/lib/auth";
 import {
   getValidationErrorMessage,
   tokenRequestBodySchema,
@@ -48,6 +49,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     }
 
     const roomCode = parsedBody.data.roomCode;
+    const session = await auth.api.getSession({ headers: request.headers });
 
     const livekitConfig = getLivekitConfig();
 
@@ -81,21 +83,48 @@ export async function POST(request: NextRequest): Promise<Response> {
       return NextResponse.json({ error: "Room has already ended." }, { status: 409 });
     }
 
-    const participantName = parsedBody.data.participantName ?? "Guest";
-    const participantEmail = parsedBody.data.participantEmail ?? buildGuestEmail();
+    const participantNameFromBody = parsedBody.data.participantName;
 
-    const user = await prisma.user.upsert({
-      where: { email: participantEmail },
-      update: {
-        displayName: participantName,
-      },
-      create: {
-        email: participantEmail,
-        displayName: participantName,
-      },
-    });
+    let user;
 
-    const role = user.id === room.hostId ? ParticipantRole.HOST : ParticipantRole.STUDENT;
+    if (session) {
+      user = await prisma.user.upsert({
+        where: { id: session.user.id },
+        update: {
+          email: session.user.email,
+          displayName: participantNameFromBody ?? session.user.name,
+          emailVerified: session.user.emailVerified,
+        },
+        create: {
+          id: session.user.id,
+          email: session.user.email,
+          displayName: participantNameFromBody ?? session.user.name,
+          emailVerified: session.user.emailVerified,
+        },
+      });
+    } else if (parsedBody.data.participantEmail) {
+      user = await prisma.user.upsert({
+        where: { email: parsedBody.data.participantEmail },
+        update: {
+          displayName: participantNameFromBody ?? "Guest",
+        },
+        create: {
+          email: parsedBody.data.participantEmail,
+          displayName: participantNameFromBody ?? "Guest",
+        },
+      });
+    } else {
+      user = await prisma.user.create({
+        data: {
+          email: buildGuestEmail(),
+          displayName: participantNameFromBody ?? "Guest",
+        },
+      });
+    }
+
+    const participantName =
+      user.displayName ?? participantNameFromBody ?? session?.user.name ?? "Guest";
+    const role = session?.user.id === room.hostId ? ParticipantRole.HOST : ParticipantRole.STUDENT;
 
     await prisma.participant.upsert({
       where: {
