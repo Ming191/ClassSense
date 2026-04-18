@@ -2,39 +2,56 @@ import { ParticipantRole, RoomStatus } from "@/app/generated/prisma/enums";
 import { NextRequest, NextResponse } from "next/server";
 import { AccessToken } from "livekit-server-sdk";
 import { prisma } from "@/lib/prisma";
+import { buildGuestEmail } from "@/lib/request-input";
+import {
+  getValidationErrorMessage,
+  tokenRequestBodySchema,
+} from "@/lib/request-validation";
 
-type TokenRequestBody = {
-  roomCode?: string;
-  participantName?: string;
-  participantEmail?: string;
+type LivekitConfig = {
+  apiKey: string;
+  apiSecret: string;
+  serverUrl: string;
 };
 
-function normalizeRoomCode(input: string): string {
-  return input.trim().toUpperCase();
+function getLivekitConfig(): LivekitConfig | null {
+  const apiKey = process.env.LIVEKIT_API_KEY;
+  const apiSecret = process.env.LIVEKIT_API_SECRET;
+  const serverUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL ?? process.env.LIVEKIT_URL;
+
+  if (!apiKey || !apiSecret || !serverUrl) {
+    return null;
+  }
+
+  return {
+    apiKey,
+    apiSecret,
+    serverUrl,
+  };
 }
 
-function normalizeEmail(input: string): string {
-  return input.trim().toLowerCase();
-}
-
-function buildGuestEmail(): string {
-  return `guest-${crypto.randomUUID()}@guest.classsense.local`;
-}
-
-export async function POST(request: NextRequest) {
+export async function POST(request: NextRequest): Promise<Response> {
   try {
-    const body = (await request.json()) as TokenRequestBody;
-    const roomCode = body.roomCode ? normalizeRoomCode(body.roomCode) : "";
+    const rawBody = await request.json().catch(() => null);
 
-    if (!roomCode) {
-      return NextResponse.json({ error: "roomCode is required." }, { status: 400 });
+    if (!rawBody) {
+      return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
     }
 
-    const apiKey = process.env.LIVEKIT_API_KEY;
-    const apiSecret = process.env.LIVEKIT_API_SECRET;
-    const serverUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL ?? process.env.LIVEKIT_URL;
+    const parsedBody = tokenRequestBodySchema.safeParse(rawBody);
 
-    if (!apiKey || !apiSecret || !serverUrl) {
+    if (!parsedBody.success) {
+      return NextResponse.json(
+        { error: getValidationErrorMessage(parsedBody.error) },
+        { status: 400 }
+      );
+    }
+
+    const roomCode = parsedBody.data.roomCode;
+
+    const livekitConfig = getLivekitConfig();
+
+    if (!livekitConfig) {
       return NextResponse.json(
         {
           error:
@@ -64,10 +81,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Room has already ended." }, { status: 409 });
     }
 
-    const participantName = body.participantName?.trim() || "Guest";
-    const participantEmail = body.participantEmail?.trim()
-      ? normalizeEmail(body.participantEmail)
-      : buildGuestEmail();
+    const participantName = parsedBody.data.participantName ?? "Guest";
+    const participantEmail = parsedBody.data.participantEmail ?? buildGuestEmail();
 
     const user = await prisma.user.upsert({
       where: { email: participantEmail },
@@ -110,7 +125,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const accessToken = new AccessToken(apiKey, apiSecret, {
+    const accessToken = new AccessToken(livekitConfig.apiKey, livekitConfig.apiSecret, {
       identity: user.id,
       name: user.displayName ?? participantName,
       metadata: JSON.stringify({
@@ -135,7 +150,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         token,
-        serverUrl,
+        serverUrl: livekitConfig.serverUrl,
         room: {
           code: room.code,
           title: room.title,

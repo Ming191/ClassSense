@@ -3,31 +3,37 @@ import { Prisma } from "@/app/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createRoomCode, toLivekitRoomName } from "@/lib/room-code";
+import {
+  createRoomBodySchema,
+  getValidationErrorMessage,
+} from "@/lib/request-validation";
 
-type CreateRoomBody = {
-  title?: string;
-  hostName?: string;
-  hostEmail?: string;
-};
+const MAX_ROOM_CODE_ATTEMPTS = 8;
 
-function normalizeEmail(input: string): string {
-  return input.trim().toLowerCase();
+function buildDefaultRoomTitle(): string {
+  return `ClassSense Room ${new Date().toLocaleString()}`;
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(request: NextRequest): Promise<Response> {
   try {
-    const body = (await request.json()) as CreateRoomBody;
-    const hostEmail = body.hostEmail ? normalizeEmail(body.hostEmail) : "";
+    const rawBody = await request.json().catch(() => null);
 
-    if (!hostEmail || !hostEmail.includes("@")) {
+    if (!rawBody) {
+      return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
+    }
+
+    const parsedBody = createRoomBodySchema.safeParse(rawBody);
+
+    if (!parsedBody.success) {
       return NextResponse.json(
-        { error: "hostEmail is required and must be a valid email." },
+        { error: getValidationErrorMessage(parsedBody.error) },
         { status: 400 }
       );
     }
 
-    const hostName = body.hostName?.trim() || hostEmail.split("@")[0];
-    const title = body.title?.trim() || `ClassSense Room ${new Date().toLocaleString()}`;
+    const hostEmail = parsedBody.data.hostEmail;
+    const hostName = parsedBody.data.hostName ?? hostEmail.split("@")[0];
+    const title = parsedBody.data.title ?? buildDefaultRoomTitle();
 
     const hostUser = await prisma.user.upsert({
       where: { email: hostEmail },
@@ -38,7 +44,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_ROOM_CODE_ATTEMPTS; attempt += 1) {
       const roomCode = createRoomCode();
 
       try {

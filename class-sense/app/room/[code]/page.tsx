@@ -20,6 +20,7 @@ import {
 import "@livekit/components-styles";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
+import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Track } from "livekit-client";
 
@@ -38,12 +39,18 @@ type RoomTokenPayload = {
   };
 };
 
-function FilmstripCameraTile({ trackRef }: { trackRef: TrackReferenceOrPlaceholder }) {
+function FilmstripCameraTile({
+  trackRef,
+}: {
+  trackRef: TrackReferenceOrPlaceholder;
+}): ReactElement {
   const displayName =
     trackRef.participant.name?.trim() || trackRef.participant.identity || "Guest";
-  const avatarLetter = displayName.charAt(0).toUpperCase();
+  const avatarLetter = displayName.charAt(0).toUpperCase() || "G";
   const cameraTrackRef = isTrackReference(trackRef) ? trackRef : null;
-  const isCameraOn = cameraTrackRef ? !cameraTrackRef.publication.isMuted : false;
+  const isCameraOn = cameraTrackRef?.publication
+    ? !cameraTrackRef.publication.isMuted
+    : false;
 
   return (
     <div className="classsense-filmstrip-tile relative aspect-video overflow-hidden rounded-xl border border-slate-700/70 bg-black/70">
@@ -63,7 +70,7 @@ function FilmstripCameraTile({ trackRef }: { trackRef: TrackReferenceOrPlacehold
   );
 }
 
-function RoomStage() {
+function RoomStage(): ReactElement {
   const cameraTracks = useTracks([
     { source: Track.Source.Camera, withPlaceholder: true },
   ]);
@@ -90,7 +97,7 @@ function RoomStage() {
     };
   }, []);
 
-  async function toggleShareFullscreen() {
+  async function toggleShareFullscreen(): Promise<void> {
     const stageElement = stageRef.current;
 
     if (!stageElement) {
@@ -180,12 +187,12 @@ function RoomStage() {
   );
 }
 
-export default function RoomPage() {
+export default function RoomPage(): ReactElement {
   const params = useParams<{ code: string }>();
   const searchParams = useSearchParams();
   const roomCode = useMemo(() => params.code.toUpperCase(), [params.code]);
-  const participantName = searchParams.get("name") ?? "Guest";
-  const participantEmail = searchParams.get("email") ?? "";
+  const participantName = searchParams.get("name")?.trim() || "Guest";
+  const participantEmail = searchParams.get("email")?.trim() || "";
 
   const [session, setSession] = useState<RoomTokenPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -193,6 +200,7 @@ export default function RoomPage() {
 
   useEffect(() => {
     let isCancelled = false;
+    const abortController = new AbortController();
 
     async function fetchToken() {
       setError(null);
@@ -200,6 +208,7 @@ export default function RoomPage() {
       try {
         const response = await fetch("/api/livekit/token", {
           method: "POST",
+          signal: abortController.signal,
           headers: {
             "Content-Type": "application/json",
           },
@@ -221,6 +230,10 @@ export default function RoomPage() {
           setSession(payload);
         }
       } catch (requestError) {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") {
+          return;
+        }
+
         const message =
           requestError instanceof Error
             ? requestError.message
@@ -236,6 +249,7 @@ export default function RoomPage() {
 
     return () => {
       isCancelled = true;
+      abortController.abort();
     };
   }, [participantEmail, participantName, roomCode]);
 
