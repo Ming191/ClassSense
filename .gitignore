@@ -1,4 +1,5 @@
 datasets
 .idea
 .claude
-/models/
+/cv-pipeline/models/
+*.pyc
