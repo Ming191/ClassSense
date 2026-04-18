@@ -1,64 +1,218 @@
-import Image from "next/image";
+"use client";
+
+import { FormEvent, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+
+type CreateRoomResponse = {
+  room: {
+    code: string;
+  };
+};
+
+function buildRoomUrl(code: string, name: string, email: string): string {
+  const searchParams = new URLSearchParams();
+
+  if (name.trim()) {
+    searchParams.set("name", name.trim());
+  }
+
+  if (email.trim()) {
+    searchParams.set("email", email.trim());
+  }
+
+  const query = searchParams.toString();
+  return query ? `/room/${code}?${query}` : `/room/${code}`;
+}
 
 export default function Home() {
+  const router = useRouter();
+  const todayLabel = useMemo(
+    () => new Date().toLocaleDateString("en-GB"),
+    []
+  );
+
+  const [title, setTitle] = useState(`ClassSense Session ${todayLabel}`);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+
+  async function handleCreateRoom(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setIsCreating(true);
+
+    try {
+      const response = await fetch("/api/rooms", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title,
+          hostName: name,
+          hostEmail: email,
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: string };
+        throw new Error(payload.error ?? "Failed to create room");
+      }
+
+      const payload = (await response.json()) as CreateRoomResponse;
+      router.push(buildRoomUrl(payload.room.code, name, email));
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to create a room right now.";
+      setError(message);
+    } finally {
+      setIsCreating(false);
+    }
+  }
+
+  function handleJoinRoom(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+
+    if (!joinCode.trim()) {
+      setError("Please enter a room code to join.");
+      return;
+    }
+
+    router.push(buildRoomUrl(joinCode.trim().toUpperCase(), name, email));
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#e2f4ff_0%,_#fef6ee_45%,_#fff_80%)] px-4 py-12 text-slate-900 sm:px-8">
+      <main className="mx-auto flex w-full max-w-5xl flex-col gap-8">
+        <section className="rounded-3xl border border-slate-200/70 bg-white/80 p-8 shadow-[0_20px_70px_-50px_rgba(15,23,42,0.35)] backdrop-blur">
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">
+            ClassSense Realtime
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          <h1 className="mt-4 text-4xl font-semibold tracking-tight text-slate-900 sm:text-5xl">
+            Video classroom with live AI attention signals.
+          </h1>
+          <p className="mt-4 max-w-3xl text-base text-slate-600 sm:text-lg">
+            Start a room in one click, invite learners with a short code, then
+            stream audio/video while your CV pipeline scores engagement in
+            realtime.
+          </p>
+        </section>
+
+        {error ? (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {error}
+          </div>
+        ) : null}
+
+        <section className="grid gap-6 lg:grid-cols-2">
+          <form
+            onSubmit={handleCreateRoom}
+            className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            <h2 className="text-xl font-semibold text-slate-900">Create room</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Host creates a room and receives a code learners can join.
+            </p>
+
+            <div className="mt-5 space-y-4">
+              <label className="block text-sm font-medium text-slate-700">
+                Room title
+                <input
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  required
+                />
+              </label>
+
+              <label className="block text-sm font-medium text-slate-700">
+                Your name
+                <input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  placeholder="Nguyen"
+                />
+              </label>
+
+              <label className="block text-sm font-medium text-slate-700">
+                Host email
+                <input
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  type="email"
+                  className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  placeholder="host@classsense.ai"
+                  required
+                />
+              </label>
+            </div>
+
+            <button
+              type="submit"
+              disabled={isCreating}
+              className="mt-6 inline-flex w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+            >
+              {isCreating ? "Creating room..." : "Create and join"}
+            </button>
+          </form>
+
+          <form
+            onSubmit={handleJoinRoom}
+            className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
           >
-            Documentation
-          </a>
-        </div>
+            <h2 className="text-xl font-semibold text-slate-900">Join room</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Learners can join with room code and display name.
+            </p>
+
+            <div className="mt-5 space-y-4">
+              <label className="block text-sm font-medium text-slate-700">
+                Room code
+                <input
+                  value={joinCode}
+                  onChange={(event) => setJoinCode(event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm uppercase tracking-[0.16em] text-slate-900 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  placeholder="ABCD1234"
+                  required
+                />
+              </label>
+
+              <label className="block text-sm font-medium text-slate-700">
+                Your name
+                <input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  placeholder="Learner name"
+                />
+              </label>
+
+              <label className="block text-sm font-medium text-slate-700">
+                Email (optional)
+                <input
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  type="email"
+                  className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  placeholder="student@classsense.ai"
+                />
+              </label>
+            </div>
+
+            <button
+              type="submit"
+              className="mt-6 inline-flex w-full items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-900 transition hover:border-slate-400 hover:bg-slate-50"
+            >
+              Join existing room
+            </button>
+          </form>
+        </section>
       </main>
     </div>
   );

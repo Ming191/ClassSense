@@ -11,3 +11,83 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum RoomStatus {
+  SCHEDULED
+  LIVE
+  ENDED
+}
+
+enum ParticipantRole {
+  HOST
+  CO_HOST
+  STUDENT
+}
+
+model User {
+  id             String           @id @default(cuid())
+  email          String           @unique
+  displayName    String?
+  avatarUrl      String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  hostedRooms    Room[]           @relation("RoomHost")
+  participations Participant[]
+  cvSignals      CvSignalSample[]
+}
+
+model Room {
+  id              String           @id @default(cuid())
+  code            String           @unique
+  title           String
+  status          RoomStatus       @default(SCHEDULED)
+  hostId          String
+  livekitRoomName String           @unique
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  host            User             @relation("RoomHost", fields: [hostId], references: [id], onDelete: Restrict)
+  participants    Participant[]
+  cvSignals       CvSignalSample[]
+
+  @@index([hostId])
+  @@index([status])
+}
+
+model Participant {
+  id          String          @id @default(cuid())
+  roomId      String
+  userId      String
+  role        ParticipantRole @default(STUDENT)
+  joinedAt    DateTime        @default(now())
+  leftAt      DateTime?
+  isMuted     Boolean         @default(false)
+  isCameraOff Boolean         @default(false)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  room        Room            @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@index([roomId, role])
+  @@index([userId])
+}
+
+model CvSignalSample {
+  id              String   @id @default(cuid())
+  roomId          String
+  userId          String
+  capturedAt      DateTime @default(now())
+  emotion         String?
+  emotionScore    Float?
+  engagementScore Float?
+  yaw             Float?
+  pitch           Float?
+  roll            Float?
+  room            Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([roomId, capturedAt])
+  @@index([userId, capturedAt])
+}
