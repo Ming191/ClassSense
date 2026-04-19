@@ -3,7 +3,6 @@ import { z } from "zod";
 const MAX_ROOM_TITLE_LENGTH = 120;
 const MAX_PARTICIPANT_NAME_LENGTH = 80;
 const MAX_EMAIL_LENGTH = 254;
-const ROOM_CODE_PATTERN = /^[A-Z0-9]{8}$/;
 
 function optionalTrimmedString(maxLength: number, fieldName: string) {
   return z
@@ -47,14 +46,8 @@ export const createRoomBodySchema = z
   })
   .strict();
 
-export const tokenRequestBodySchema = z
+export const sessionTokenRequestBodySchema = z
   .object({
-    roomCode: z
-      .string()
-      .trim()
-      .toUpperCase()
-      .min(1, "roomCode is required.")
-      .regex(ROOM_CODE_PATTERN, "roomCode must be an 8-character alphanumeric code."),
     participantName: optionalTrimmedString(MAX_PARTICIPANT_NAME_LENGTH, "participantName"),
     participantEmail: optionalEmailString("participantEmail"),
   })

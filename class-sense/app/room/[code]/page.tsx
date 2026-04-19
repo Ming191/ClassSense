@@ -6,6 +6,7 @@ import {
   LayoutContextProvider,
   LiveKitRoom,
   ParticipantTile,
+  PreJoin,
   RoomAudioRenderer,
   TrackLoop,
   TrackRefContext,
@@ -15,11 +16,22 @@ import {
 } from "@livekit/components-react";
 import {
   isTrackReference,
+  type LocalUserChoices,
   type TrackReferenceOrPlaceholder,
 } from "@livekit/components-core";
 import "@livekit/components-styles";
-import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RoomEvent, Track } from "livekit-client";
@@ -38,6 +50,30 @@ type RoomTokenPayload = {
     role: string;
   };
 };
+
+type JoinStage = "prejoin" | "joining" | "connected";
+
+function getJoinErrorMessage(error: unknown): string {
+  if (error instanceof DOMException) {
+    if (error.name === "NotAllowedError") {
+      return "Camera or microphone access was denied. You can still join with both media options turned off.";
+    }
+
+    if (error.name === "NotFoundError") {
+      return "The selected camera or microphone could not be found. Pick a different device or join with media off.";
+    }
+
+    if (error.name === "NotReadableError") {
+      return "A camera or microphone is already in use by another app. Close the other app or join with media off.";
+    }
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "Unable to complete room setup.";
+}
 
 function FilmstripCameraTile({
   trackRef,
@@ -134,7 +170,7 @@ function RoomStage(): ReactElement {
       <div className="flex h-full min-h-0 gap-3">
         <section
           ref={stageRef}
-          className="classsense-share-stage relative min-w-0 flex-1 overflow-hidden rounded-2xl border border-slate-700 bg-black"
+          className="classsense-share-stage relative min-w-0 flex-1 overflow-hidden rounded-2xl border border-border/70 bg-black/95 shadow-xl shadow-black/20"
         >
           <div className="absolute inset-0 flex items-center justify-center bg-black">
             <VideoTrack
@@ -143,12 +179,14 @@ function RoomStage(): ReactElement {
             />
           </div>
 
-          <button
+          <Button
             type="button"
             onClick={toggleShareFullscreen}
             title={isFullscreen ? "Exit fullscreen" : "Fullscreen share"}
             aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen share"}
-            className="absolute right-3 top-3 z-20 inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-500/80 bg-black/55 text-white transition hover:bg-black/80"
+            variant="outline"
+            size="icon"
+            className="absolute right-3 top-3 z-20 h-10 w-10 rounded-full border-white/30 bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/80 focus-visible:border-white/60 focus-visible:ring-white/40"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -176,10 +214,10 @@ function RoomStage(): ReactElement {
                 </>
               )}
             </svg>
-          </button>
+          </Button>
         </section>
 
-        <aside className="hidden w-72 shrink-0 flex-col gap-2 overflow-y-auto rounded-2xl border border-slate-700/70 bg-slate-900/50 p-2 lg:flex">
+        <aside className="hidden w-72 shrink-0 flex-col gap-2 overflow-y-auto rounded-2xl border border-border/70 bg-card/40 p-2 shadow-xl shadow-black/15 lg:flex">
           <TrackLoop tracks={cameraTracks}>
             <TrackRefContext.Consumer>
               {(trackRef) => trackRef && <FilmstripCameraTile trackRef={trackRef} />}
@@ -191,7 +229,7 @@ function RoomStage(): ReactElement {
   }
 
   return (
-    <section className="h-full overflow-hidden rounded-2xl border border-slate-800 bg-black/30">
+    <section className="h-full overflow-hidden rounded-2xl border border-border/70 bg-card/40 shadow-xl shadow-black/15">
       <GridLayout tracks={cameraTracks} className="h-full p-2">
         <TrackRefContext.Consumer>
           {(trackRef) => <ParticipantTile trackRef={trackRef} />}
@@ -203,133 +241,287 @@ function RoomStage(): ReactElement {
 
 export default function RoomPage(): ReactElement {
   const params = useParams<{ code: string }>();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const roomCode = useMemo(() => params.code.toUpperCase(), [params.code]);
   const participantName = searchParams.get("name")?.trim() || "Guest";
   const participantEmail = searchParams.get("email")?.trim() || "";
 
   const [session, setSession] = useState<RoomTokenPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [joinStage, setJoinStage] = useState<JoinStage>("prejoin");
+  const [joinChoices, setJoinChoices] = useState<LocalUserChoices | null>(null);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const requestControllerRef = useRef<AbortController | null>(null);
   const layoutContext = useCreateLayoutContext();
 
-  useEffect(() => {
-    let isCancelled = false;
-    const abortController = new AbortController();
+  const preJoinDefaults = useMemo<Partial<LocalUserChoices>>(
+    () => ({
+      username: participantName,
+      audioEnabled: true,
+      videoEnabled: true,
+      audioDeviceId: "",
+      videoDeviceId: "",
+      ...joinChoices,
+    }),
+    [joinChoices, participantName]
+  );
 
-    async function fetchToken() {
-      setError(null);
-
-      try {
-        const response = await fetch("/api/livekit/token", {
-          method: "POST",
-          signal: abortController.signal,
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            roomCode,
-            participantName,
-            participantEmail,
-          }),
-        });
-
-        if (!response.ok) {
-          const payload = (await response.json()) as { error?: string };
-          throw new Error(payload.error ?? "Unable to join room.");
-        }
-
-        const payload = (await response.json()) as RoomTokenPayload;
-
-        if (!isCancelled) {
-          setSession(payload);
-        }
-      } catch (requestError) {
-        if (requestError instanceof DOMException && requestError.name === "AbortError") {
-          return;
-        }
-
-        const message =
-          requestError instanceof Error
-            ? requestError.message
-            : "Unable to join this room.";
-
-        if (!isCancelled) {
-          setError(message);
-        }
-      }
+  const audioCapture = useMemo(() => {
+    if (!joinChoices?.audioEnabled) {
+      return false;
     }
 
-    fetchToken();
+    return joinChoices.audioDeviceId
+      ? { deviceId: joinChoices.audioDeviceId }
+      : true;
+  }, [joinChoices]);
 
+  const videoCapture = useMemo(() => {
+    if (!joinChoices?.videoEnabled) {
+      return false;
+    }
+
+    return joinChoices.videoDeviceId
+      ? { deviceId: joinChoices.videoDeviceId }
+      : true;
+  }, [joinChoices]);
+
+  useEffect(() => {
     return () => {
-      isCancelled = true;
-      abortController.abort();
+      requestControllerRef.current?.abort();
     };
-  }, [participantEmail, participantName, roomCode]);
+  }, []);
 
-  if (error) {
+  async function handlePreJoinSubmit(values: LocalUserChoices): Promise<void> {
+    requestControllerRef.current?.abort();
+
+    const abortController = new AbortController();
+    requestControllerRef.current = abortController;
+
+    setJoinChoices(values);
+    setSession(null);
+    setJoinError(null);
+    setJoinStage("joining");
+
+    const resolvedParticipantName = values.username.trim() || participantName || "Guest";
+
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(roomCode)}/token`, {
+        method: "POST",
+        signal: abortController.signal,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          participantName: resolvedParticipantName,
+          participantEmail,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorPayload = (await response.json()) as { error?: string };
+        throw new Error(errorPayload.error ?? "Unable to join room.");
+      }
+
+      const payload = (await response.json()) as RoomTokenPayload;
+
+      if (abortController.signal.aborted) {
+        return;
+      }
+
+      setSession(payload);
+      setJoinStage("connected");
+    } catch (requestError) {
+      if (requestError instanceof DOMException && requestError.name === "AbortError") {
+        return;
+      }
+
+      setJoinError(getJoinErrorMessage(requestError));
+      setJoinStage("prejoin");
+    } finally {
+      if (requestControllerRef.current === abortController) {
+        requestControllerRef.current = null;
+      }
+    }
+  }
+
+  if (joinStage === "prejoin") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-slate-100">
-        <div className="w-full max-w-lg rounded-2xl border border-rose-400/40 bg-slate-900/80 p-6">
-          <p className="text-sm uppercase tracking-[0.18em] text-rose-300">Join failed</p>
-          <h1 className="mt-3 text-2xl font-semibold">Unable to enter room {roomCode}</h1>
-          <p className="mt-3 text-sm text-slate-300">{error}</p>
-          <Link
-            href="/"
-            className="mt-6 inline-flex rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-900"
-          >
-            Back to lobby
-          </Link>
-        </div>
+      <div className="dark classsense-prejoin-shell relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-8 text-foreground">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(14,165,233,0.18),transparent_40%),radial-gradient(ellipse_at_bottom,rgba(99,102,241,0.14),transparent_45%)]"
+        />
+
+        <Card className="relative w-full max-w-5xl border-border/70 bg-card/85 shadow-2xl shadow-black/30 backdrop-blur-xl">
+          <CardHeader className="gap-3 border-b border-border/70 pb-5">
+            <div className="space-y-2">
+              <Badge variant="secondary" className="h-6 px-3 text-[0.68rem] tracking-[0.16em]">
+                Pre-join setup
+              </Badge>
+              <CardTitle className="text-2xl text-foreground sm:text-3xl">Ready to join room</CardTitle>
+              <CardDescription className="max-w-2xl text-sm text-muted-foreground">
+                Review your camera and microphone setup before joining. You can still continue
+                with both media options turned off.
+              </CardDescription>
+            </div>
+            <CardAction className="mt-1">
+              <Badge
+                variant="outline"
+                className="h-7 border-border bg-background/70 px-3 text-[0.7rem] tracking-[0.2em] text-foreground"
+              >
+                {roomCode}
+              </Badge>
+            </CardAction>
+          </CardHeader>
+
+          <CardContent className="space-y-6 pb-6">
+            <div className="mx-auto w-full max-w-3xl">
+              <div className="rounded-2xl border border-border/70 bg-background/40 p-4 shadow-xl shadow-black/10 sm:p-5">
+                {joinError ? (
+                  <Alert
+                    variant="destructive"
+                    className="mb-4 border-destructive/35 bg-destructive/10 text-destructive"
+                  >
+                    <AlertTitle>Unable to join room</AlertTitle>
+                    <AlertDescription className="text-destructive/90">{joinError}</AlertDescription>
+                  </Alert>
+                ) : null}
+
+                <div className="classsense-prejoin-panel rounded-xl border border-border/70 bg-card/50 p-3 sm:p-4">
+                  <PreJoin
+                    defaults={preJoinDefaults}
+                    onSubmit={handlePreJoinSubmit}
+                    onError={(error) => {
+                      setJoinError(getJoinErrorMessage(error));
+                    }}
+                    joinLabel="Join room"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => {
+                router.push("/");
+              }}
+              className="h-10 min-w-32 border-border bg-background/80"
+            >
+              Back to lobby
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
-  if (!session) {
+  if (joinStage === "joining" || !session) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-950 px-4 text-slate-100">
-        <div className="h-9 w-9 animate-spin rounded-full border-2 border-slate-400 border-t-transparent" />
-        <p className="text-sm text-slate-300">Joining room {roomCode}...</p>
+      <div className="dark classsense-prejoin-shell flex min-h-screen items-center justify-center px-4 text-foreground">
+        <Card className="w-full max-w-md border-border/70 bg-card/85 shadow-2xl shadow-black/20 backdrop-blur-lg">
+          <CardHeader className="gap-2 pb-2">
+            <Badge variant="secondary" className="h-6 w-fit px-3 text-[0.68rem] tracking-[0.14em]">
+              Connecting
+            </Badge>
+            <CardTitle className="text-xl text-foreground">Joining room {roomCode}</CardTitle>
+            <CardDescription>Confirming your setup and securing your seat.</CardDescription>
+          </CardHeader>
+          <CardContent className="pb-5 pt-1">
+            <div className="flex items-center gap-3 rounded-lg border border-border/70 bg-background/60 px-3 py-2.5">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-muted-foreground/80 border-t-transparent" />
+              <p className="text-sm text-muted-foreground">Establishing encrypted connection…</p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
   return (
-    <div className="classsense-room flex h-dvh flex-col overflow-hidden bg-slate-950 text-white">
-      <div className="flex shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900/90 px-4 py-3">
-        <div>
-          <p className="text-xs uppercase tracking-[0.18em] text-sky-300">Live room</p>
-          <h1 className="text-sm font-semibold sm:text-base">{session.room.title}</h1>
-        </div>
-        <p className="rounded-full border border-slate-700 px-3 py-1 text-xs tracking-[0.16em] text-slate-200">
-          {session.room.code}
-        </p>
-      </div>
-
+    <div className="dark classsense-room flex h-dvh flex-col overflow-hidden bg-slate-950 text-foreground">
       <LiveKitRoom
         serverUrl={session.serverUrl}
         token={session.token}
-        connect
-        audio
-        video
-        className="min-h-0 flex-1 overflow-hidden"
+        connect={joinStage === "connected"}
+        audio={audioCapture}
+        video={videoCapture}
+        onError={(error) => {
+          setJoinError(getJoinErrorMessage(error));
+        }}
+        onMediaDeviceFailure={(failure, kind) => {
+          const readableFailure = failure ? `${failure}` : "Unknown device error";
+          const readableKind = kind === "audioinput" ? "microphone" : "camera";
+          setJoinError(
+            `LiveKit could not access your ${readableKind} (${readableFailure}). You can continue in-room and adjust devices from settings.`
+          );
+        }}
+        className="min-h-0 flex-1 overflow-hidden p-3 sm:p-4"
       >
         <LayoutContextProvider value={layoutContext}>
-          <div className="flex h-full min-h-0 flex-col overflow-hidden">
-            <div className="min-h-0 flex-1 overflow-hidden p-3">
-              <RoomStage />
+          <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+            <Card
+              size="sm"
+              className="shrink-0 border-border/70 bg-card/75 shadow-xl shadow-black/15 backdrop-blur-md"
+            >
+              <CardHeader className="gap-2">
+                <div>
+                  <Badge variant="secondary" className="mb-1.5 h-5 px-2.5 text-[0.64rem] tracking-[0.16em]">
+                    Live room
+                  </Badge>
+                  <CardTitle className="text-base text-foreground sm:text-lg">{session.room.title}</CardTitle>
+                </div>
+                <CardAction>
+                  <Badge
+                    variant="outline"
+                    className="h-7 border-border bg-background/70 px-3 text-[0.7rem] tracking-[0.2em] text-foreground"
+                  >
+                    {session.room.code}
+                  </Badge>
+                </CardAction>
+              </CardHeader>
+            </Card>
+
+            <div className="shrink-0 min-h-14">
+              {joinError ? (
+                <Alert
+                  variant="destructive"
+                  className="border-destructive/35 bg-destructive/10 text-destructive"
+                >
+                  <AlertTitle>Device access issue</AlertTitle>
+                  <AlertDescription className="text-destructive/90">{joinError}</AlertDescription>
+                </Alert>
+              ) : (
+                <div aria-hidden className="h-full rounded-lg border border-transparent" />
+              )}
             </div>
-            <ControlBar
-              variation="verbose"
-              controls={{
-                microphone: true,
-                camera: true,
-                screenShare: true,
-                chat: false,
-                settings: true,
-                leave: true,
-              }}
-            />
+
+            <Card className="min-h-0 flex-1 border-border/70 bg-card/45 shadow-xl shadow-black/20">
+              <CardContent className="min-h-0 flex-1 p-3">
+                <RoomStage />
+              </CardContent>
+            </Card>
+
+            <Card
+              size="sm"
+              className="shrink-0 overflow-visible border-border/70 bg-card/55 shadow-lg shadow-black/20"
+            >
+              <CardContent className="px-2 py-2 sm:px-3">
+                <ControlBar
+                  variation="verbose"
+                  controls={{
+                    microphone: true,
+                    camera: true,
+                    screenShare: true,
+                    chat: false,
+                    settings: true,
+                    leave: true,
+                  }}
+                />
+              </CardContent>
+            </Card>
           </div>
         </LayoutContextProvider>
         <RoomAudioRenderer />

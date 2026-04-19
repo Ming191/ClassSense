@@ -1,0 +1,16 @@
+services:
+  firebase-emulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.firebase
+    container_name: classsense-firebase-emulator
+    ports:
+      - "8080:8080"
+      - "9099:9099"
+      - "4000:4000"
+    volumes:
+      - ./:/workspace
+      - firebase-emulator-data:/workspace/.firebase-data
+
+volumes:
+  firebase-emulator-data:

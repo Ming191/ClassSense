@@ -8,24 +8,16 @@ function hasSessionCookie(request: NextRequest): boolean {
 export async function proxy(request: NextRequest) {
   const isAuthenticated = hasSessionCookie(request);
   const pathname = request.nextUrl.pathname;
+  const isSessionCreateRequest = pathname === "/api/sessions" && request.method === "POST";
+  const isSessionEndRequest = /^\/api\/sessions\/[^/]+$/.test(pathname) && request.method === "DELETE";
 
-  if (pathname === "/api/rooms" && request.method === "POST" && !isAuthenticated) {
+  if ((isSessionCreateRequest || isSessionEndRequest) && !isAuthenticated) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
-  }
-
-  if (pathname === "/auth" && isAuthenticated) {
-    const nextPath = request.nextUrl.searchParams.get("next");
-    const redirectPath =
-      nextPath && nextPath.startsWith("/") && !nextPath.startsWith("//")
-        ? nextPath
-        : "/";
-
-    return NextResponse.redirect(new URL(redirectPath, request.url));
   }
 
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/auth", "/api/rooms"],
+  matcher: ["/api/sessions", "/api/sessions/:path*"],
 };
