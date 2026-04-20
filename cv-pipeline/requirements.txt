@@ -3,3 +3,5 @@ sixdrepnet>=0.1.6
 emotiefflib>=1.1.1
 opencv-python>=4.10.0
 numpy>=2.0.0
+livekit>=0.11
+redis>=5.0.0

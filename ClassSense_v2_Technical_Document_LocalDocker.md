@@ -17,7 +17,7 @@
 7. [HCI Features — Design & Implementation](#7-hci-features--design--implementation)
 8. [Unified Teacher Dashboard](#8-unified-teacher-dashboard)
 9. [Student Experience Design](#9-student-experience-design)
-10. [Cloud Deployment](#10-cloud-deployment)
+10. [Local Deployment — Docker Compose](#10-local-deployment--docker-compose)
 11. [Revised 8-Week Roadmap](#11-revised-8-week-roadmap)
 12. [Privacy & Ethics](#12-privacy--ethics)
 13. [Technical Limitations & HCI Ambiguity](#13-technical-limitations--hci-ambiguity)
@@ -51,7 +51,7 @@ The system is designed for small to medium online classes (1–20 students) and 
 
 - Video conferencing: audio + video for up to 20 participants
 - Platforms: any modern browser (Chrome, Firefox, Edge) — no installation required
-- Deployment: GCP (LiveKit SFU on Cloud Run + existing Firestore/Pub/Sub infrastructure)
+- Deployment: **fully local via Docker Compose** — all services run on a single machine, no cloud account required
 - CV pipeline: **unchanged from v1** — frame source changes from WebSocket to LiveKit track subscription
 - HCI features: 6 features in v2.0 (see Section 7)
 
@@ -156,11 +156,12 @@ def livekit_frame_to_bgr(frame: rtc.VideoFrame) -> np.ndarray:
 
 | Service | Technology | Role |
 |---|---|---|
-| Session Manager | Next.js API Routes + Firestore | Room creation, token issuance, participant management |
+| Session Manager | Next.js API Routes + **SQLite** (via Prisma) | Room creation, token issuance, participant management — persisted locally |
 | CV Worker v2 | Python + LiveKit SDK | Track subscription + CV pipeline (replaces thin_client + gateway) |
 | Gaze Heatmap Aggregator | Python + NumPy | Accumulate gaze points into heatmap grid per screenshare frame |
-| Screenshare Frame Cache | Redis (Cloud Memorystore) | Cache latest screenshare frame for heatmap overlay computation |
+| Screenshare Frame Cache | **Redis** (Docker container) | Cache latest screenshare frame for heatmap overlay computation |
 | Intervention Engine | Python | Rule-based engine that generates HCI intervention events |
+| Realtime Event Bus | **Redis Pub/Sub** | Replaces GCP Pub/Sub — CV Worker publishes events; Next.js API subscribes and pushes to browser via SSE/WebSocket |
 
 Session Manager endpoints are implemented as Next.js API Routes under `app/api/`, co-located with the frontend in the same Next.js monorepo. This eliminates the need for a separate FastAPI service for non-CV logic:
 
@@ -217,9 +218,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 | Heatmap | `heatmap.js` | Gaze density overlay on screenshare canvas |
 | State Management | Zustand | Client-side engagement state, alert queue |
 | Styling | Tailwind CSS v4 | Utility-first, responsive |
-| Auth | Firebase Auth (client SDK) + `next-firebase-auth-edge` | SSR-compatible session cookies for teacher + student auth |
-| Realtime Data | Firestore JS SDK (`onSnapshot`) | Live engagement scores, HCI events |
-| Hosting | **Vercel** | Zero-config Next.js deploy, edge network, preview deployments per PR |
+| Auth | **NextAuth.js** (credentials provider) + JWT session cookies | SSR-compatible auth — no external service required |
+| Realtime Data | **Socket.IO** (via Next.js custom server) or **polling** against local API | Replaces Firestore `onSnapshot` — live engagement scores pushed over WebSocket |
+| Hosting | **Docker Compose** (local) | Next.js runs as a Node.js container; no Vercel account needed |
 
 **Route structure:**
 
@@ -241,7 +242,7 @@ app/
 - API Routes eliminate the need for a separate FastAPI service for session management and token issuance — non-CV business logic lives co-located with the frontend. The CV Worker remains Python.
 - App Router Server Components pre-render report pages server-side (engagement charts as static HTML), reducing Time-to-Interactive on low-spec devices.
 - `next/dynamic` with `{ ssr: false }` isolates WebRTC and LiveKit components (which require `window`/`navigator`) without manual lazy-loading boilerplate.
-- Vercel preview deployments per branch allow rapid HCI feature iteration and sharing demo links with course instructors.
+- Running Next.js as a plain Node.js server in Docker (`next start`) requires zero cloud configuration — the same container works locally and in any future deployment.
 
 ---
 
@@ -261,18 +262,18 @@ app/
                                   │ ~1–2 Mbps per student
                                   ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│                  LIVEKIT SFU (Cloud Run / GKE)                       │
+│                  LIVEKIT SFU (Docker container)                      │
 │                                                                      │
 │  Receives all student video + audio tracks                           │
 │  Forwards to: Teacher browser + CV Worker (as service participant)   │
-│  Handles: simulcast, adaptive bitrate, TURN relay                    │
+│  Handles: simulcast, adaptive bitrate, TURN relay (UDP on LAN)       │
 └──────────┬────────────────────────────────┬──────────────────────────┘
            │ WebRTC to teacher              │ LiveKit SDK (Python)
            │                               │ CV Worker subscribes to
            ▼                               │ each student's video track
 ┌──────────────────────┐                   ▼
 │  TEACHER BROWSER     │  ┌────────────────────────────────────────────┐
-│  (Next.js)           │  │           CV WORKER (Cloud Run)            │
+│  (Next.js)           │  │         CV WORKER (Docker container)       │
 │                      │  │                                            │
 │  Video grid          │  │  For each student video track:             │
 │  Engagement overlay  │  │  VideoFrame → BGR NumPy                    │
@@ -282,15 +283,14 @@ app/
 │                      │  │  → emotion_classifier.py (emotiefflib)     │
 └──────────────────────┘  │  → FrameSignal                             │
            ▲               │  → Score Aggregator                        │
-           │ Firestore     │  → Intervention Engine                     │
-           │ realtime      │                                            │
+           │ SSE            │  → Intervention Engine                     │
+           │ (EventSource) │                                            │
            │               └──────────────────┬─────────────────────────┘
-           │                                  │
+           │                                  │ Redis Pub/Sub
            │               ┌──────────────────▼─────────────────────────┐
-           │               │            FIRESTORE                        │
-           └───────────────│  sessions/{id}/students/{id}/scores         │
-                           │  sessions/{id}/hci_events                   │
-                           │  sessions/{id}/gaze_heatmap                 │
+           │               │         REDIS + SQLite (local)              │
+           └───────────────│  Redis: scores:{id}, hci:{id}, gaze:{id}    │
+                           │  SQLite: sessions, scores, hci_events        │
                            └────────────────────────────────────────────┘
 ```
 
@@ -307,18 +307,18 @@ v1: Thin Client → WebSocket → Gateway → Pub/Sub → CV Worker
 v2: LiveKit SFU → (Python SDK) → CV Worker  [direct, no queue needed]
 ```
 
-Pub/Sub is retained for the Gaze Heatmap Aggregator, which needs to collect gaze points from all students before generating a heatmap. This is a fan-in aggregation pattern that fits Pub/Sub well.
+Redis Pub/Sub is used for the Gaze Heatmap Aggregator, which needs to collect gaze points from all students before generating a heatmap. This is a fan-in aggregation pattern that fits Pub/Sub well — and Redis already runs as part of the Docker Compose stack, so no additional service is needed.
 
 #### Screenshare-Aware Gaze Heatmap
 
 When the teacher shares their screen, the LiveKit server publishes the screenshare as a separate video track. The CV Worker:
 1. Detects when a screenshare track becomes active (via LiveKit room event)
 2. Subscribes to the screenshare track
-3. Caches the latest screenshare frame in Redis (Memorystore)
+3. Caches the latest screenshare frame in Redis (local Docker container)
 4. For each student's gaze vector, projects it onto the screenshare coordinate space
 5. Accumulates projected gaze points into a 2D histogram
-6. Writes the normalized heatmap array to Firestore every 5 seconds
-7. Teacher dashboard overlays the heatmap on the screenshare canvas using heatmap.js
+6. Publishes the normalized heatmap array to Redis (`gaze:{session_id}`) every 5 seconds
+7. Teacher dashboard receives heatmap update via SSE and overlays it on the screenshare canvas using heatmap.js
 
 #### Token-Based Room Access Control
 
@@ -326,7 +326,7 @@ Room access is controlled entirely through JWT tokens issued by the Session Mana
 
 ```
 Teacher creates session
-  → Session Manager creates Firestore doc + LiveKit room
+  → Session Manager creates SQLite record + LiveKit room
   → Issues teacher token (canPublish, canSubscribe, canAdminRoom)
   → Returns invite link with embedded session_id
 
@@ -337,7 +337,7 @@ Student opens invite link
 
 CV Worker
   → Session Manager issues service token per room (canSubscribe only, hidden)
-  → Worker auto-joins when Firestore session status = "active"
+  → Worker auto-joins when SQLite session status = "active" (detected via Redis signal)
 ```
 
 ---
@@ -348,20 +348,21 @@ CV Worker
 
 ```
 [Teacher]
-1. Authenticates via Firebase Auth (Google SSO or email/password)
+1. Authenticates via NextAuth.js (credentials provider — username/password stored in SQLite)
 2. Clicks "New Session" → Session Manager creates:
-   - Firestore doc: sessions/{session_id}
+   - SQLite record: sessions table (via Prisma)
    - LiveKit room: classsense-{session_id}
-3. Receives shareable link: https://app.classsense.io/join/{session_id}
+3. Receives shareable link: http://{HOST_IP}:3000/join/{session_id}
 
 [Students]
 4. Open link → enter display name → grant camera/mic permission
 5. Receive LiveKit token from Session Manager
 6. Connect to LiveKit SFU → video/audio track published
-7. Firestore listener subscribes to engagement score updates for their own student_id
+7. Connect to SSE endpoint: /api/sessions/{session_id}/stream
+   (receives HCI events filtered by their student_id)
 
 [CV Worker]
-8. Detects new session in Firestore (status = "active")
+8. Detects new session via Redis signal published by Session Manager
 9. Joins LiveKit room as service participant
 10. Subscribes to all VIDEO tracks as they appear
 11. Begins frame processing loop per participant
@@ -388,20 +389,22 @@ CV Worker
 9. Compute E(t) = 0.35×S_blink + 0.30×S_gaze + 0.25×S_pose + 0.10×S_emotion
 10. Apply EMA(α=0.3) → E_display(t)
 11. Detect event flags (DISTRACTION, DROWSY, CONFUSED, FACE_MISSING, LOW_ENGAGEMENT)
-12. Write to Firestore: sessions/{id}/students/{student_id}/scores
-    payload: { timestamp, score, flags, gaze_zone, emotion, yaw, pitch }
+12. Publish to Redis: scores:{session_id}
+    payload: { student_id, timestamp, score, flags, gaze_zone, emotion, yaw, pitch }
+    Also write to SQLite for persistence (async, non-blocking)
 
 [Intervention Engine — per student]
 13. Evaluate HCI rules against latest FrameSignals + Score
-14. If rule fires → write HCI event to Firestore: sessions/{id}/hci_events
+14. If rule fires → publish HCI event to Redis: hci:{session_id}
     payload: { type, student_id, timestamp, suggested_action, auto_trigger }
+    Also write to SQLite (hci_events table)
 
-[Firestore → Teacher Dashboard]
-15. onSnapshot listener receives score update → update video tile color overlay
-16. onSnapshot on hci_events → trigger alert, animate UI element
+[Next.js SSE endpoint → Teacher Dashboard]
+15. EventSource receives score update via Redis subscription → update video tile color overlay
+16. EventSource receives hci event → trigger alert, animate UI element
 
-[Firestore → Student Client]
-17. onSnapshot on hci_events filtered by student_id → show private prompt if applicable
+[Next.js SSE endpoint → Student Client]
+17. EventSource (filtered by student_id) → show private prompt if applicable
 ```
 
 ### 5.3 Gaze Heatmap Pipeline
@@ -413,28 +416,28 @@ Per student frame, if screenshare is active:
 2. Map gaze vector to screen coordinates using head pose + iris offset
    (simplified: use yaw/pitch angles + iris_offset as 2D proxy)
 3. Publish gaze point {student_id, screen_x_normalized, screen_y_normalized}
-   to Pub/Sub topic: gaze-{session_id}
+   to Redis channel: gaze-{session_id}
 
-[Gaze Heatmap Aggregator — separate Cloud Run service]
-4. Subscribe to gaze-{session_id}
+[Gaze Heatmap Aggregator — separate Docker container]
+4. Subscribe to gaze-{session_id} Redis channel
 5. Accumulate gaze points in 40×30 grid (matches 4:3 / 16:9 aspect ratio)
-6. Every 5 seconds: normalize grid → Gaussian blur (σ=1.5) → write to Firestore
-   sessions/{id}/gaze_heatmap: { grid: float[40][30], timestamp }
+6. Every 5 seconds: normalize grid → Gaussian blur (σ=1.5) → publish to Redis
+   heatmap:{session_id}: { grid: float[40][30], timestamp }
 
-[Teacher Dashboard]
-7. onSnapshot on gaze_heatmap → update heatmap.js canvas overlay on screenshare
+[Next.js SSE endpoint → Teacher Dashboard]
+7. EventSource receives heatmap update → update heatmap.js canvas overlay on screenshare
 ```
 
 ### 5.4 Session End
 
 ```
 Teacher clicks "End Session"
-  → Session Manager sets Firestore session status = "completed"
-  → CV Worker detects status change → disconnects from LiveKit room
+  → Session Manager sets SQLite session status = "completed" (via Prisma)
+  → CV Worker detects status change (via Redis signal) → disconnects from LiveKit room
   → LiveKit room auto-closes when all participants leave
-  → Gaze Heatmap Aggregator flushes final grid
-  → Score Aggregator flushes remaining buffer
-  → Report Generator trigger fires (Firestore Function)
+  → Gaze Heatmap Aggregator flushes final grid to SQLite
+  → Score Aggregator flushes remaining buffer to SQLite
+  → Report generation available immediately (data is already in SQLite)
   → Dashboard redirects to Post-session Report
 ```
 
@@ -544,7 +547,7 @@ elif trend < -0.15:  # rapid decline even if absolute score is OK
 
 Suggestions are chosen based on session elapsed time and frequency of prior interventions in the session (avoid repeating the same suggestion within 10 minutes).
 
-**Implementation:** Intervention Engine writes events to `sessions/{id}/hci_events`. Teacher Dashboard onSnapshot handler renders a Toast notification with suggested action buttons.
+**Implementation:** Intervention Engine publishes events to the Redis channel `hci:{session_id}`. The Next.js SSE stream endpoint forwards these to the teacher's browser, which renders a Toast notification with suggested action buttons.
 
 ### 7.3 Live Gaze Heatmap on Screenshare
 
@@ -602,7 +605,7 @@ if (student.C_score_sustained_seconds >= 8 and
     )
 ```
 
-**Student receives:** `sessions/{id}/hci_events` filtered by `student_id` — only sees their own events.
+**Student receives:** The Next.js SSE stream endpoint filters HCI events by `student_id` — each student's `EventSource` connection only receives events addressed to them. The confusion prompt event triggers a private toast component on the student's page.
 
 **Teacher view:** When the student clicks "Raise Hand" (whether self-initiated or after prompt), teacher sees the standard hand-raise indicator. Teacher never sees whether the raise was self-initiated or CV-triggered — this avoids stigmatizing students flagged by the system.
 
@@ -624,13 +627,13 @@ if (student.C_score_sustained_seconds >= 8 and
 
 **Data model:**
 
-```
-sessions/{session_id}/students/{student_id}/scores  (subcollection)
-  documents: one per score update
-  fields: { timestamp, score, flags, emotion, gaze_zone, yaw, pitch }
+```sql
+-- Prisma-generated SQLite table (see Section 10.7)
+-- Score table: one row per score update per student
+-- Fields: id, sessionId, studentId, timestamp, score, flags (JSON), emotion, gazeZone, yaw, pitch
 ```
 
-The frontend queries this subcollection for the timeline. For live view, the existing `onSnapshot` listener already populates a local ring buffer.
+The frontend queries scores via the Next.js API route `GET /api/sessions/[id]/students/[studentId]/scores`. For live view, the SSE stream already populates a client-side ring buffer via `EventSource`.
 
 ### 7.7 Teacher Gaze Feedback (Post-Session, Optional)
 
@@ -641,7 +644,7 @@ The frontend queries this subcollection for the timeline. For live view, the exi
 
 **Framing:** This feature is explicitly positioned as a **reflective development tool**, not a surveillance metric. The data is private to the teacher and not visible to students or administrators.
 
-**Implementation:** Teacher's video track is processed identically to student tracks. The FrameSignal is stored in a separate Firestore subcollection accessible only to the teacher's UID. Gaze zone from the teacher's perspective maps to: `camera` (center gaze → eye contact), `down` (looking at notes), `right/left` (looking at secondary screen or slides).
+**Implementation:** Teacher's video track is processed identically to student tracks. The FrameSignal is stored in a separate SQLite table (`TeacherGazeRecord`) accessible only via API routes authenticated as the teacher's session. Gaze zone from the teacher's perspective maps to: `camera` (center gaze → eye contact), `down` (looking at notes), `right/left` (looking at secondary screen or slides).
 
 ---
 
@@ -692,7 +695,7 @@ Hovering a tile shows a tooltip with sub-scores: blink rate, gaze status, head p
 
 ### 8.3 Post-Session Report
 
-The post-session report is auto-generated from Firestore data when the session ends.
+The post-session report is generated from SQLite data queried via Prisma when the teacher navigates to the report page.
 
 **Sections:**
 1. **Session summary:** duration, number of students, average class engagement, peak and trough points
@@ -754,54 +757,214 @@ When enabled (teacher opt-in at session creation), students see a minimal, delay
 
 ---
 
-## 10. Cloud Deployment
+## 10. Local Deployment — Docker Compose
+
+ClassSense v2 runs entirely on a single machine via Docker Compose. No cloud account, no external services, no API keys beyond LiveKit's own key pair (generated locally). This is the primary deployment target for the course project.
 
 ### 10.1 Services Overview
 
-| Component | GCP Service | Notes |
-|---|---|---|
-| LiveKit SFU | Cloud Run (always-on, min=1) | Stateful — cannot scale-to-zero mid-session |
-| CV Worker | Cloud Run (scale 0→N) | Scales per active session; 1 instance per 5 students |
-| Session Manager (API Routes) | **Vercel** (serverless functions) | Next.js API Routes; auto-scaled, zero cold-start on Vercel edge |
-| Gaze Heatmap Aggregator | Cloud Run (scale-to-zero) | Activated per session via Pub/Sub |
-| Gaze Point Queue | Pub/Sub | Topic: `gaze-{session_id}` |
-| Session Data | Firestore | Realtime listener for dashboard |
-| Snapshot Storage | GCS (CMEK) | Event snapshots, 30-day lifecycle |
-| Screenshare Frame Cache | Cloud Memorystore (Redis) | Latest screenshare frame for heatmap projection |
-| Dashboard + Student Client | **Vercel** | Next.js SSR + static, CDN-distributed, preview per branch |
-| TURN Server | LiveKit built-in (UDP 443) | NAT traversal; alternatively Coturn on GCE |
+| Component | Docker Image / Service | Port | Notes |
+|---|---|---|---|
+| LiveKit SFU | `livekit/livekit-server:latest` | 7880 (WS), 7881 (TCP-TURN), 50000-50020 (UDP RTP) | SFU — routes video/audio between participants |
+| CV Worker | `classsense/cv-worker` (custom build) | — (outbound only) | Connects to LiveKit as service participant |
+| Gaze Heatmap Aggregator | `classsense/gaze-aggregator` (custom build) | — | Subscribes to Redis channel; computes heatmap grid |
+| Next.js App | `classsense/nextjs-app` (custom build) | 3000 | Session Manager API Routes + Teacher/Student UI |
+| Redis | `redis:7-alpine` | 6379 | Score/event pub-sub + screenshare frame cache |
+| SQLite (via Prisma) | — (volume-mounted file) | — | Session and user data; no separate container needed |
+| Snapshot Storage | — (local volume `./data/snapshots`) | — | Replaces GCS; event snapshots stored on disk |
 
-### 10.2 LiveKit Deployment on Cloud Run
+All containers communicate over a Docker bridge network (`classsense-net`). Browsers on the same LAN connect to the host machine's IP.
 
-LiveKit requires persistent WebSocket connections (duration of the class session). Cloud Run supports long-lived connections via `--timeout=3600`. LiveKit's own documentation recommends running it on a VM or GKE for production, but for a course project Cloud Run is adequate up to ~20 concurrent participants.
+### 10.2 Repository Structure
 
-```dockerfile
-# LiveKit SFU on Cloud Run
-FROM livekit/livekit-server:latest
-
-COPY livekit.yaml /etc/livekit.yaml
-
-CMD ["--config", "/etc/livekit.yaml"]
+```
+classsense-v2/
+├── docker-compose.yml
+├── .env                        # LIVEKIT_API_KEY, LIVEKIT_API_SECRET, NEXTAUTH_SECRET
+├── livekit/
+│   └── livekit.yaml
+├── services/
+│   ├── cv_worker/
+│   │   ├── Dockerfile
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   └── gaze_aggregator/
+│       ├── Dockerfile
+│       └── main.py
+├── web/                        # Next.js monorepo
+│   ├── Dockerfile
+│   ├── package.json
+│   └── app/
+│       ├── (teacher)/
+│       ├── (student)/
+│       └── api/
+└── data/
+    ├── snapshots/              # Event snapshot images
+    └── classsense.db           # SQLite database (auto-created)
 ```
 
+### 10.3 docker-compose.yml
+
 ```yaml
-# livekit.yaml
+version: "3.9"
+
+networks:
+  classsense-net:
+    driver: bridge
+
+volumes:
+  snapshots-data:
+  sqlite-data:
+
+services:
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: classsense-livekit
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"       # WebSocket (browser connects here)
+      - "7881:7881"       # TCP TURN relay
+      - "50000-50020:50000-50020/udp"  # RTP media (LAN, UDP preferred)
+    environment:
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+    networks:
+      - classsense-net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: classsense-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - classsense-net
+    restart: unless-stopped
+
+  cv-worker:
+    build:
+      context: ./services/cv_worker
+      dockerfile: Dockerfile
+    container_name: classsense-cv-worker
+    environment:
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - snapshots-data:/app/snapshots
+    depends_on:
+      - livekit
+      - redis
+    networks:
+      - classsense-net
+    restart: unless-stopped
+
+  gaze-aggregator:
+    build:
+      context: ./services/gaze_aggregator
+      dockerfile: Dockerfile
+    container_name: classsense-gaze-aggregator
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - classsense-net
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: classsense-web
+    ports:
+      - "3000:3000"
+    environment:
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - LIVEKIT_URL_PUBLIC=ws://${HOST_IP}:7880  # LAN IP of host machine, for browsers
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=file:/data/classsense.db
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=http://${HOST_IP}:3000
+    volumes:
+      - sqlite-data:/data
+      - snapshots-data:/app/public/snapshots
+    depends_on:
+      - livekit
+      - redis
+    networks:
+      - classsense-net
+    restart: unless-stopped
+```
+
+### 10.4 LiveKit Configuration (Local)
+
+```yaml
+# livekit/livekit.yaml
 port: 7880
+bind_addresses:
+  - ""
 rtc:
-  udp_port: 50000-60000
+  udp_port: 50000-50020
   tcp_port: 7881
-  use_external_ip: true
+  use_external_ip: false       # Local LAN — no external IP needed
+  # If students are on the same LAN as the host, UDP works directly.
+  # If connecting from a different machine over NAT, set use_external_ip: true
+  # and add the host's LAN IP to ice_host_candidates.
 keys:
-  ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
+  # Populated from environment variables via docker-compose
+  devkey: devsecret
 logging:
   level: info
 ```
 
-Cloud Run does not support UDP. Therefore, LiveKit must be configured to use **TCP-only TURN relay** for all client connections, which adds ~30–50 ms latency but is functionally equivalent for classroom video.
+**Important for LAN usage:** Students connect using the host machine's LAN IP (e.g., `192.168.1.x`), not `localhost`. Set `HOST_IP` in `.env` to the host's LAN IP before running `docker compose up`. UDP media will work natively on a LAN — no TCP-TURN penalty.
 
-For production beyond the course project scope, LiveKit should be deployed on a GCE instance or GKE node pool with UDP port range exposed.
+### 10.5 CV Worker — Docker Image
 
-### 10.3 CV Worker — LiveKit Python SDK Integration
+```dockerfile
+# services/cv_worker/Dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System dependencies for OpenCV and MediaPipe
+RUN apt-get update && apt-get install -y \
+    libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download ML models at build time (avoids cold start)
+COPY download_models.py .
+RUN python download_models.py
+
+COPY . .
+
+CMD ["python", "main.py"]
+```
+
+```
+# services/cv_worker/requirements.txt
+livekit>=0.11
+mediapipe>=0.10.33
+sixdrepnet>=0.1.6
+emotiefflib>=1.1.1
+opencv-python-headless>=4.10.0
+numpy>=2.0.0
+redis>=5.0.0
+```
+
+The `download_models.py` script fetches `face_landmarker.task` (3.7 MB), `6DRepNet_300W_LP_AFLW2000.pth` (60 MB), and `enet_b0_8_best_afew.onnx` (20 MB) at **image build time**, so the CV Worker starts instantly — no cold start delay.
+
+### 10.6 CV Worker — LiveKit Python SDK Integration
 
 ```python
 # services/cv_worker/main.py
@@ -857,22 +1020,140 @@ class CVWorker:
         await self.aggregators[student_id].add(signal)
 ```
 
-### 10.4 Cost Estimate (10 students, 60 min/session)
+**Realtime event delivery (replacing Firestore `onSnapshot`):** The CV Worker publishes score updates and HCI events to Redis channels (`scores:{session_id}` and `hci:{session_id}`). The Next.js app subscribes via a Node.js Redis client and pushes updates to connected browsers using **Server-Sent Events (SSE)** at `/api/sessions/[id]/stream`. The browser uses the native `EventSource` API — no additional WebSocket library needed.
 
-| Resource | Consumption | Estimated Cost |
+```typescript
+// web/app/api/sessions/[id]/stream/route.ts
+import { NextRequest } from "next/server";
+import { createClient } from "redis";
+
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  const encoder = new TextEncoder();
+  const redis = createClient({ url: process.env.REDIS_URL });
+  await redis.connect();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      await redis.subscribe(`scores:${params.id}`, (message) => {
+        controller.enqueue(encoder.encode(`data: ${message}\n\n`));
+      });
+      req.signal.addEventListener("abort", async () => {
+        await redis.unsubscribe();
+        await redis.quit();
+        controller.close();
+      });
+    }
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    }
+  });
+}
+```
+
+### 10.7 Session Data — SQLite via Prisma
+
+Firestore is replaced by a SQLite database, accessed through Prisma ORM in Next.js API Routes. SQLite stores session metadata, participant records, score time-series, and HCI event logs. The database file is volume-mounted at `/data/classsense.db` and persists across container restarts.
+
+```prisma
+// web/prisma/schema.prisma
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  name      String
+  status    String   @default("active")  // active | completed
+  createdAt DateTime @default(now())
+  scores    Score[]
+  hciEvents HciEvent[]
+}
+
+model Score {
+  id        String   @id @default(cuid())
+  sessionId String
+  studentId String
+  timestamp DateTime @default(now())
+  score     Float
+  flags     String   // JSON array: ["DISTRACTION", ...]
+  emotion   String
+  gazeZone  String
+  yaw       Float
+  pitch     Float
+  session   Session  @relation(fields: [sessionId], references: [id])
+}
+
+model HciEvent {
+  id        String   @id @default(cuid())
+  sessionId String
+  type      String   // CONFUSION_PROMPT | PACING_ALERT | FATIGUE_WARNING
+  studentId String?
+  payload   String   // JSON
+  timestamp DateTime @default(now())
+  session   Session  @relation(fields: [sessionId], references: [id])
+}
+```
+
+### 10.8 Snapshot Storage — Local Volume
+
+Event snapshots (face crops saved on alert events) are written to the `snapshots-data` Docker volume, mounted at `./data/snapshots/` on the host. The Next.js app serves them as static files from `public/snapshots/`. No GCS bucket or CMEK needed.
+
+```python
+# In CV Worker — save snapshot to shared volume
+import cv2, os, time
+
+def save_snapshot(face_roi: np.ndarray, student_id: str, event_type: str):
+    ts = int(time.time() * 1000)
+    path = f"/app/snapshots/{student_id}/{event_type}_{ts}.jpg"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cv2.imwrite(path, face_roi, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return f"/snapshots/{student_id}/{event_type}_{ts}.jpg"  # public URL
+```
+
+### 10.9 Getting Started
+
+```bash
+# 1. Clone the repo and set environment variables
+cp .env.example .env
+# Edit .env:
+#   LIVEKIT_API_KEY=devkey
+#   LIVEKIT_API_SECRET=devsecret   (min 32 chars in production)
+#   NEXTAUTH_SECRET=$(openssl rand -base64 32)
+#   HOST_IP=192.168.1.x            # Your machine's LAN IP
+
+# 2. Build and start all services
+docker compose up --build
+
+# 3. Initialize the database (first run only)
+docker compose exec web npx prisma migrate deploy
+
+# 4. Open the app
+#   Teacher: http://HOST_IP:3000/sessions
+#   Students: http://HOST_IP:3000/join/[sessionId]
+#   (share the invite link from the teacher dashboard)
+```
+
+All students on the same LAN can join by navigating to the invite URL. No internet connection required after the initial image build.
+
+### 10.10 Resource Requirements
+
+| Resource | Minimum | Recommended |
 |---|---|---|
-| Cloud Run — LiveKit SFU (always-on min=1) | 1 vCPU × 730h/month | ~$24/month fixed |
-| Cloud Run — CV Worker | 2 vCPU × 60 min × sessions | ~$0.08/session |
-| Cloud Memorystore (Redis) | 1GB basic tier | ~$35/month fixed |
-| Pub/Sub (gaze points) | 10 students × 15fps × 3600s = 540K msgs | ~$0.02/session |
-| Firestore | Score + event writes | ~$0.01/session |
-| GCS snapshots | ~50 images × 50KB | ~$0.001/session |
-| Vercel (Next.js app + API Routes) | Hobby free tier (course project) | $0 |
-| WebRTC bandwidth | Handled by LiveKit SFU internal forwarding | Included in Cloud Run egress |
-| **Total variable** | | **~$0.10/session** |
-| **Total fixed** | | **~$59/month** |
+| CPU | 4 cores | 6+ cores (CV Worker is CPU-intensive) |
+| RAM | 8 GB | 16 GB |
+| Disk | 10 GB (images + models) | 20 GB |
+| OS | Linux or macOS with Docker Desktop | Linux preferred (lower overhead) |
+| Network | LAN (Ethernet or Wi-Fi) | Ethernet for teacher machine |
 
-> The key cost change from v1: WebSocket egress cost ($0.86/session) is replaced by LiveKit's internal SFU forwarding (no client-to-cloud raw frame upload). The bandwidth is consumed by WebRTC media within the SFU network — significantly cheaper than uploading raw JPEG frames over WebSocket. Total variable cost per session drops from ~$1.00 to ~$0.10.
+The CV Worker is the most CPU-intensive component: ~1 CPU core per 3–4 students being analyzed. For a class of 10 students, expect ~3 cores consumed by the CV Worker at peak. The LiveKit SFU is efficient — SFU routing typically consumes < 0.5 cores for 10–20 participants.
+
+**GPU acceleration (optional):** MediaPipe and emotiefflib support ONNX Runtime with CUDA. Uncommenting the `--gpus all` flag in the CV Worker service definition in `docker-compose.yml` and building with the CUDA-enabled Dockerfile variant reduces CV Worker CPU usage by ~70% on machines with an NVIDIA GPU.
 
 ---
 
@@ -905,29 +1186,33 @@ class CVWorker:
 
 ### Week 3 — LiveKit Integration (WebRTC Foundation)
 
-**Deliverable:** Teacher and student can video call each other in the ClassSense browser app
+**Deliverable:** Teacher and student can video call each other in the ClassSense browser app (fully local via Docker Compose)
 
-- [ ] `[P0]` Deploy LiveKit SFU on Cloud Run with TCP-TURN config
+- [ ] `[P0]` Write `docker-compose.yml` with LiveKit, Redis, CV Worker, and Next.js services
+- [ ] `[P0]` Configure `livekit/livekit.yaml` for local LAN with UDP port range (50000–50020)
 - [ ] `[P1]` Implement Session Manager as Next.js API Routes (`app/api/sessions/`): create room, issue LiveKit JWT
 - [ ] `[P1]` Build minimal Next.js student page (`/join/[sessionId]`): camera + mic + connect to LiveKit room — use `next/dynamic` with `ssr: false` for LiveKit components
 - [ ] `[P1]` Build minimal Next.js teacher page (`/dashboard/[sessionId]`): see student video tiles
-- [ ] `[P1]` Firebase Auth integration via `next-firebase-auth-edge`: teacher Google login, student name entry with session token
+- [ ] `[P1]` Auth via **NextAuth.js** (credentials provider): teacher username/password login, student name entry with session token; no Firebase dependency
+- [ ] `[P1]` Set up Prisma + SQLite for session and participant data (`prisma/schema.prisma`)
 - [ ] `[P1]` Session lifecycle: create session → invite link → join → end
 - [ ] `[P2]` Basic UI: mute, camera toggle, raise hand button
-- [ ] `[P2]` Test with 3–5 participants, validate latency < 500ms
+- [ ] `[P2]` Test with 3–5 participants on LAN, validate latency < 200ms
 
 ---
 
 ### Week 4 — CV Worker + LiveKit Integration
 
-**Deliverable:** CV Worker joins room, processes student video, scores appear in Firestore
+**Deliverable:** CV Worker joins room, processes student video, scores appear in SQLite and are pushed to browser via SSE
 
 - [ ] `[P0]` Implement `livekit_frame_to_bgr()` — VideoFrame → NumPy BGR
 - [ ] `[P0]` Implement CV Worker as LiveKit service participant (Python SDK)
 - [ ] `[P1]` Wire CV Worker to Score Aggregator — identical to v1 from FrameSignal onward
-- [ ] `[P1]` Implement `firestore_writer.py` — write scores + event flags per student
-- [ ] `[P1]` Deploy CV Worker on Cloud Run: auto-join on session activation
-- [ ] `[P1]` Test end-to-end: student joins → CV Worker subscribes track → score written to Firestore
+- [ ] `[P1]` Implement `redis_writer.py` — publish scores + event flags per student to Redis Pub/Sub channel
+- [ ] `[P1]` Implement SSE endpoint in Next.js (`/api/sessions/[id]/stream`) — subscribe to Redis, push to browser
+- [ ] `[P1]` Write scores to SQLite via Prisma (async, non-blocking path)
+- [ ] `[P1]` Build CV Worker Docker image: download ML models at build time to eliminate cold start
+- [ ] `[P1]` Test end-to-end: student joins → CV Worker subscribes track → score arrives in browser via SSE
 - [ ] `[P2]` Implement Intervention Engine skeleton with first rule: LOW_ENGAGEMENT alert
 
 ---
@@ -936,14 +1221,14 @@ class CVWorker:
 
 **Deliverable:** Teacher sees video grid with color-coded engagement tiles + basic alert feed
 
-- [ ] `[P1]` Add Firestore `onSnapshot` listener to teacher client
+- [ ] `[P1]` Add SSE `EventSource` listener to teacher client (connects to `/api/sessions/[id]/stream`)
 - [ ] `[P1]` Implement video tile color overlay (green/amber/red) based on E_display
 - [ ] `[P1]` Build Alert Feed component: toast notifications for event flags
 - [ ] `[P2]` Build Class Trend Line: rolling 5-min class average (Recharts, rendered as a Client Component)
 - [ ] `[P1]` Implement Attention Timeline: rolling 10-min per-student bar (bottom panel)
 - [ ] `[P2]` Video tile hover → tooltip with sub-scores
 - [ ] `[P2]` Implement Adaptive Pacing Alerts (Section 7.2): Intervention Engine rule + teacher Toast
-- [ ] `[P2]` Test with real class (2–3 people), validate < 3s latency end-to-end
+- [ ] `[P2]` Test with real class (2–3 people on LAN), validate < 3s latency end-to-end
 
 ---
 
@@ -951,13 +1236,13 @@ class CVWorker:
 
 **Deliverable:** Gaze heatmap on screenshare, confusion prompt on student, fatigue warning
 
-- [ ] `[P1]` Implement Gaze Heatmap Aggregator (Cloud Run + Pub/Sub)
-- [ ] `[P1]` Implement gaze-to-screen projection in CV Worker
+- [ ] `[P1]` Implement Gaze Heatmap Aggregator as a separate Python service (subscribes to Redis `gaze:{session_id}` channel)
+- [ ] `[P1]` Implement gaze-to-screen projection in CV Worker; publish gaze points to Redis
 - [ ] `[P1]` Implement heatmap.js overlay on screenshare canvas in teacher client
-- [ ] `[P1]` Implement Confusion Detector: C_score threshold → HCI event → student private prompt
+- [ ] `[P1]` Implement Confusion Detector: C_score threshold → HCI event → publish to Redis `hci:{session_id}` → SSE to student
 - [ ] `[P1]` Build confusion prompt UI on student client (private, bottom-right toast)
 - [ ] `[P2]` Implement Fatigue Warning: F_score threshold → teacher badge on student tile
-- [ ] `[P2]` Implement "Suggest Break" broadcast: teacher click → student break banner
+- [ ] `[P2]` Implement "Suggest Break" broadcast: teacher click → all students receive break banner via SSE
 - [ ] `[P3]` Implement Teacher Gaze Feedback: opt-in CV analysis on teacher track
 
 ---
@@ -966,27 +1251,27 @@ class CVWorker:
 
 **Deliverable:** Full 45-min session, exportable PDF report with timeline + snapshots
 
-- [ ] `[P1]` Implement `report_generator.py` — query full session from Firestore, compute stats
+- [ ] `[P1]` Implement `report_generator.py` — query full session from SQLite via Prisma, compute stats
 - [ ] `[P1]` Build Report UI: engagement timeline, per-student table, HCI event log
-- [ ] `[P1]` Implement event snapshot storage (GCS CMEK, 30-day lifecycle)
+- [ ] `[P1]` Implement event snapshot storage (local volume at `./data/snapshots/`, served as static files)
 - [ ] `[P0]` Implement dual consent flow: analysis consent + snapshot consent separately
 - [ ] `[P2]` PDF export via browser print CSS
 - [ ] `[P2]` CSV export for raw score time-series
 - [ ] `[P1]` Error handling: lost webcam, no face detected, worker crash + retry
-- [ ] `[P1]` Load test: 10 simultaneous students, measure latency + CPU
-- [ ] `[P2]` Cloud Run auto-scaling: CV Worker min=0, max=5 instances
+- [ ] `[P1]` Load test: 10 simultaneous students on LAN, measure latency + CPU usage on host
+- [ ] `[P2]` Document hardware requirements for running the full stack (see Section 10.10)
 
 ---
 
-### Week 8 — Polish, Production & Demo
+### Week 8 — Polish, Demo & Documentation
 
-**Deliverable:** Production deployment, recorded demo of all HCI features with real users
+**Deliverable:** Stable local deployment via `docker compose up`, recorded demo of all HCI features with real users
 
-- [ ] `[P1]` Setup GCP production project (separate from dev)
+- [ ] `[P1]` Write `README.md` with full setup instructions: prerequisites (Docker, LAN IP), `.env` setup, `docker compose up --build`, Prisma migrate
 - [ ] `[P1]` UI polish: responsive layout, loading states, error messages
 - [ ] `[P1]` Full consent flow: privacy notice → dual consent → analysis begins
 - [ ] `[P1]` Opt-out toggle: pause analysis anytime without leaving session
-- [ ] `[P1]` Pilot with 1–2 teachers, 4–8 students per session
+- [ ] `[P1]` Pilot with 1–2 teachers, 4–8 students per session on LAN
 - [ ] `[P2]` Per-student EAR calibration: 60s baseline at session start
 - [ ] `[P2]` Record demo video for course submission
 - [ ] `[P2]` Collect teacher feedback: do alerts feel actionable? Does heatmap add value?
@@ -998,14 +1283,14 @@ class CVWorker:
 ```
 Week 1  [██████████] CV Pipeline core ✅
 Week 2  [          ] Score Aggregator + local demo
-Week 3  [          ] LiveKit SFU + basic video call
-Week 4  [          ] CV Worker ↔ LiveKit integration
+Week 3  [          ] Docker Compose + LiveKit SFU + basic video call
+Week 4  [          ] CV Worker ↔ LiveKit + Redis Pub/Sub + SSE
 Week 5  [          ] Engagement overlay on video dashboard
 Week 6  [          ] HCI features (heatmap, confusion, fatigue)
 Week 7  [          ] Post-session report + hardening
-Week 8  [          ] Production, pilot, demo
+Week 8  [          ] Polish, LAN pilot, demo
 
-Critical path: W3 (LiveKit) → W4 (CV+LiveKit) → W5 (dashboard) → W6 (HCI)
+Critical path: W3 (Docker + LiveKit) → W4 (CV+LiveKit+SSE) → W5 (dashboard) → W6 (HCI)
 HCI features are isolated modules — W6 items can be parallelized by team members
 ```
 
@@ -1021,9 +1306,9 @@ ClassSense v2 adds video conferencing, which significantly expands the privacy s
 |---|---|---|---|
 | Raw video stream | JPEG frames to Cloud Run (discarded) | WebRTC to LiveKit SFU (not recorded by default) | LiveKit recording requires explicit opt-in Egress; disabled by default |
 | Audio | Not present | WebRTC audio to SFU | Audio is not analyzed; routed peer-to-peer via SFU, not stored |
-| Gaze points (heatmap) | Not present | Aggregated 40×30 grid written to Firestore | No individual student gaze trajectory is stored — only class aggregate |
+| Gaze points (heatmap) | Not present | Aggregated 40×30 grid written to SQLite | No individual student gaze trajectory is stored — only class aggregate |
 | Teacher video | Not analyzed | Optionally analyzed (Teacher Gaze Feedback) | Opt-in, teacher-private, not visible to students or admin |
-| Confusion prompts | Not present | HCI event log stored in Firestore | Student never sees whether a prompt was CV-triggered or not |
+| Confusion prompts | Not present | HCI event log stored in SQLite | Student never sees whether a prompt was CV-triggered or not |
 
 ### 12.2 Design Principles (Extended from v1)
 
@@ -1032,7 +1317,7 @@ ClassSense v2 adds video conferencing, which significantly expands the privacy s
 3. **Invisible participant transparency:** The CV Worker joins as a LiveKit room participant. Students are informed of this in the privacy notice — *"An automated analysis system joins your session to measure engagement. It cannot speak or interact with you."*
 4. **Asymmetric privacy for students vs. teacher:** Students do not see their own engagement scores. Teachers see aggregate and per-student scores, but with deliberate friction to prevent misuse (scores are advisory, not grade-linked).
 5. **No recording by default:** LiveKit session recording (Egress) is not enabled in v2.0. Recording would require separate consent flow and is listed as a v3 feature.
-6. **Right to erasure:** Students can request deletion of all Firestore score data and GCS snapshots via an erasure API endpoint, as in v1.
+6. **Right to erasure:** Students can request deletion of all SQLite score data and local snapshot files via an erasure API endpoint (`DELETE /api/sessions/{id}/student/{studentId}/data`), as in v1.
 
 ### 12.3 Ethical Considerations for HCI Features
 
@@ -1066,13 +1351,17 @@ All HCI features in v2 are designed with these ambiguities in mind. Alerts inclu
 
 ### 13.3 LiveKit Latency & Scale Limits
 
-Cloud Run + TCP-TURN (no UDP) adds 30–50 ms to WebRTC media path compared to direct UDP. For classroom video, this is imperceptible. For interactive exercises requiring < 100ms response (e.g., real-time music performance), TCP-TURN is insufficient — UDP-capable deployment (GCE/GKE) would be required.
+On a local LAN with UDP available (ports 50000–50020 open), WebRTC media flows directly over UDP with typical latency of 10–30 ms — significantly better than the TCP-TURN path required on Cloud Run. If participants are connecting over Wi-Fi or a congested LAN, latency may rise to 50–100 ms, which remains imperceptible for classroom video.
 
-Scale limit for course project deployment: ~20 concurrent participants per LiveKit Cloud Run instance. Beyond this, LiveKit should be deployed with horizontal scaling on GKE.
+If some participants cannot reach the host's UDP ports (e.g., due to a strict NAT or firewall), LiveKit will fall back to TCP-TURN automatically via port 7881. This adds 30–50 ms but is functionally equivalent.
 
-### 13.4 CV Worker Cold Start
+Scale limit for course project deployment: ~20 concurrent participants on a single-machine Docker Compose setup. The bottleneck is typically the CV Worker's CPU usage (~1 core per 3–4 students analyzed simultaneously). Beyond this, the CV Worker should be run on a more capable machine or with GPU acceleration enabled (see Section 10.10).
 
-Cloud Run CV Worker has a cold start time of 15–30 seconds (model loading: face_landmarker.task + 6DRepNet + emotiefflib ONNX). Students joining a session during cold start will not have their scores computed until the Worker is ready. Mitigation: pre-warm the Worker when the teacher creates a session (not when the first student joins).
+### 13.4 CV Worker Startup Time
+
+The CV Worker Docker image pre-downloads all ML models at **build time** (`download_models.py` runs during `docker build`), so model loading on container start is near-instant — the files are already on disk inside the image layer. The first `docker compose up --build` takes 3–5 minutes due to model downloads, but subsequent starts are fast.
+
+If the CV Worker container is restarted mid-session (e.g., due to a crash), it will re-join the LiveKit room and re-subscribe to all active student tracks automatically. Students who joined during the restart window will not have scores computed for that gap (~5–10 seconds). Mitigation: the CV Worker implements a `restart: unless-stopped` policy in `docker-compose.yml` to minimize downtime.
 
 ### 13.5 Gaze Heatmap Sparsity
 
