@@ -3,3 +3,4 @@ datasets
 .claude
 /cv-pipeline/models/
 *.pyc
+.env

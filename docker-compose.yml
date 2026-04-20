@@ -1,0 +1,59 @@
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50020:50000-50020/udp"
+    restart: unless-stopped
+    networks:
+      - classsense-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - classsense-net
+
+  web:
+    build:
+      context: ./class-sense
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      LIVEKIT_URL_PUBLIC: ${LIVEKIT_URL_PUBLIC}
+      REDIS_URL: ${REDIS_URL}
+    depends_on:
+      - livekit
+      - redis
+    restart: unless-stopped
+    networks:
+      - classsense-net
+
+  cv-worker:
+    build:
+      context: ./cv-pipeline
+      dockerfile: Dockerfile
+    environment:
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_TOKEN: ${LIVEKIT_TOKEN}
+      SESSION_ID: ${SESSION_ID}
+      REDIS_URL: ${REDIS_URL}
+    depends_on:
+      - livekit
+      - redis
+    restart: unless-stopped
+    networks:
+      - classsense-net
+
+networks:
+  classsense-net:
+    name: classsense-net
