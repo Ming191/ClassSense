@@ -1,3 +1,5 @@
+torch==2.5.1
+torchvision==0.20.1
 mediapipe>=0.10.33
 sixdrepnet>=0.1.6
 emotiefflib>=1.1.1

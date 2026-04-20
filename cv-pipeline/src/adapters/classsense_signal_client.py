@@ -52,6 +52,9 @@ class ClassSenseSignalClient:
     async def publish_gaze(self, session_id: str, payload: dict) -> int:
         return await self._publish(f"gaze-{session_id}", payload)
 
+    async def publish_heatmap(self, session_id: str, payload: dict) -> int:
+        return await self._publish(f"heatmap:{session_id}", payload)
+
     async def _publish(self, channel: str, payload: dict) -> int:
         if self._redis is None:
             raise RuntimeError("ClassSenseSignalClient is not connected")

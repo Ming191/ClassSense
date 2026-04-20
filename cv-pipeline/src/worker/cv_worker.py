@@ -67,6 +67,7 @@ class CVWorker:
         )
 
         self._aggregators: dict[str, Any] = {}
+        self._frame_counts: dict[str, int] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._streams: dict[str, Any] = {}
         self._room = None
@@ -166,6 +167,7 @@ class CVWorker:
             await self._maybe_close(stream)
             self._streams.pop(student_id, None)
             self._tasks.pop(student_id, None)
+            self._frame_counts.pop(student_id, None)
 
     async def _process_bgr_frame(self, student_id: str, frame_bgr) -> None:
         now = time.time()
@@ -207,6 +209,22 @@ class CVWorker:
             self._aggregators[student_id] = aggregator
 
         score_result = aggregator.push(signal)
+
+        frame_count = self._frame_counts.get(student_id, 0) + 1
+        self._frame_counts[student_id] = frame_count
+        if frame_count == 1:
+            print(f"[cv-worker] first-frame student={student_id}", flush=True)
+        elif frame_count % 30 == 0:
+            print(
+                "[cv-worker] score"
+                f" student={student_id}"
+                f" E_display={score_result.E_display:.3f}"
+                f" low={score_result.flag_low_engagement}"
+                f" med={score_result.flag_medium_engagement}"
+                f" high={score_result.flag_high_engagement}",
+                flush=True,
+            )
+
         await self.signal_client.publish_score(
             self.settings.session_id,
             score_result_to_payload(score_result),
@@ -218,10 +236,13 @@ class CVWorker:
             )
 
         if self.settings.publish_gaze_points:
+            gaze_payload = frame_signal_to_gaze_payload(signal)
             await self.signal_client.publish_gaze(
-                self.settings.session_id,
-                frame_signal_to_gaze_payload(signal),
+                self.settings.session_id, gaze_payload
             )
+            publish_heatmap = getattr(self.signal_client, "publish_heatmap", None)
+            if callable(publish_heatmap):
+                await publish_heatmap(self.settings.session_id, gaze_payload)
 
     @staticmethod
     def _student_id(participant, publication, track) -> str:
@@ -237,8 +258,15 @@ class CVWorker:
         kind = getattr(track, "kind", None)
         if kind is None:
             return True
-        name = getattr(kind, "name", str(kind)).lower()
-        return "video" in name
+
+        # livekit python uses protobuf enum wrappers where track.kind is often
+        # an int (KIND_VIDEO == 2). Keep string fallback for mocked objects.
+        if isinstance(kind, int):
+            # 2 == TrackKind.KIND_VIDEO
+            return kind == 2
+
+        name = getattr(kind, "name", str(kind)).upper()
+        return "VIDEO" in name or name == "2" or name == "KIND_VIDEO"
 
     @staticmethod
     async def _maybe_close(resource) -> None:

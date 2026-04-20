@@ -4,6 +4,7 @@
 
 ```bash
 cp .env.example .env
+python cv-pipeline/scripts/download_models.py
 ```
 
 Edit `.env` as needed.
@@ -43,3 +44,4 @@ docker compose restart cv-worker
 ## Notes
 
 - Current web session state is in-memory and will reset when the web container restarts.
+- CV worker requires local model files under `cv-pipeline/models` (downloaded by step 1 above), mounted into container as `/app/models`.

@@ -57,6 +57,7 @@ class _FakeSignalClient:
         self.scores = []
         self.hci = []
         self.gaze = []
+        self.heatmap = []
 
     async def connect(self):
         return None
@@ -74,6 +75,10 @@ class _FakeSignalClient:
 
     async def publish_gaze(self, session_id, payload):
         self.gaze.append((session_id, payload))
+        return 1
+
+    async def publish_heatmap(self, session_id, payload):
+        self.heatmap.append((session_id, payload))
         return 1
 
 
@@ -94,7 +99,7 @@ class _AlwaysEventEngine:
 
 
 class TestCVWorkerSmoke(unittest.TestCase):
-    def test_process_bgr_frame_publishes_score_hci_and_gaze(self):
+    def test_process_bgr_frame_publishes_score_hci_gaze_and_heatmap(self):
         async def _run():
             settings = _Settings()
             publisher = _FakeSignalClient()
@@ -115,6 +120,7 @@ class TestCVWorkerSmoke(unittest.TestCase):
             self.assertEqual(len(publisher.hci), 1)
             self.assertEqual(publisher.hci[0][1]["type"], "PACING_ALERT")
             self.assertEqual(len(publisher.gaze), 1)
+            self.assertEqual(len(publisher.heatmap), 1)
 
         asyncio.run(_run())
 
