@@ -1,6 +1,7 @@
 import { ParticipantRole, RoomStatus } from "@/app/generated/prisma/enums";
 import { Prisma } from "@/app/generated/prisma/client";
 import { auth } from "@/lib/auth";
+import { upsertSessionDashboardMeta } from "@/lib/firebase/admin";
 import { prisma } from "@/lib/prisma";
 import { createRoomCode, toLivekitRoomName } from "@/lib/room-code";
 
@@ -144,6 +145,18 @@ export async function createSession(input: {
         },
       });
 
+      try {
+        await upsertSessionDashboardMeta({
+          sessionId: room.id,
+          sessionCode: room.code,
+          status: room.status,
+          title: room.title,
+          hostId: hostUser.id,
+        });
+      } catch (syncError) {
+        console.error("Failed to upsert dashboard metadata in Firestore", syncError);
+      }
+
       return {
         session: {
           id: room.id,
@@ -253,6 +266,16 @@ export async function endSession(input: {
       endedAt: true,
     },
   });
+
+  try {
+    await upsertSessionDashboardMeta({
+      sessionId: updated.id,
+      sessionCode: updated.code,
+      status: updated.status,
+    });
+  } catch (syncError) {
+    console.error("Failed to sync ended session metadata to Firestore", syncError);
+  }
 
   return {
     data: {

@@ -3,6 +3,7 @@ import { AccessToken } from "livekit-server-sdk";
 import { prisma } from "@/lib/prisma";
 import { buildGuestEmail } from "@/lib/request-input";
 import { auth } from "@/lib/auth";
+import { upsertSessionDashboardMeta } from "@/lib/firebase/admin";
 
 export type LivekitConfig = {
   apiKey: string;
@@ -25,6 +26,21 @@ type ParticipantTokenPayload = {
   };
 };
 
+type WorkerTokenPayload = {
+  token: string;
+  serverUrl: string;
+  room: {
+    id: string;
+    code: string;
+    title: string;
+    livekitRoomName: string;
+  };
+  worker: {
+    identity: string;
+    name: string;
+  };
+};
+
 export type CreateParticipantTokenResult =
   | {
       error: {
@@ -34,6 +50,17 @@ export type CreateParticipantTokenResult =
     }
   | {
       data: ParticipantTokenPayload;
+    };
+
+export type CreateWorkerTokenResult =
+  | {
+      error: {
+        status: number;
+        message: string;
+      };
+    }
+  | {
+      data: WorkerTokenPayload;
     };
 
 export function getLivekitConfig(): LivekitConfig | null {
@@ -163,13 +190,31 @@ export async function createParticipantToken(input: {
   });
 
   if (room.status === RoomStatus.SCHEDULED) {
-    await prisma.room.update({
+    const promotedRoom = await prisma.room.update({
       where: { id: room.id },
       data: {
         status: RoomStatus.LIVE,
         startedAt: new Date(),
       },
+      select: {
+        id: true,
+        code: true,
+        title: true,
+        status: true,
+      },
     });
+
+    try {
+      await upsertSessionDashboardMeta({
+        sessionId: promotedRoom.id,
+        sessionCode: promotedRoom.code,
+        status: promotedRoom.status,
+        title: promotedRoom.title,
+        hostId: room.hostId,
+      });
+    } catch (syncError) {
+      console.error("Failed to sync promoted room metadata to Firestore", syncError);
+    }
   }
 
   const accessToken = new AccessToken(livekitConfig.apiKey, livekitConfig.apiSecret, {
@@ -210,4 +255,103 @@ export async function createParticipantToken(input: {
       },
     },
   } as const;
+}
+
+export async function createServiceWorkerToken(input: {
+  roomCode: string;
+  workerIdentity?: string;
+  workerName?: string;
+  expectedSecret?: string;
+}): Promise<CreateWorkerTokenResult> {
+  if (!input.expectedSecret || input.expectedSecret !== process.env.WORKER_AUTH_SECRET) {
+    return {
+      error: {
+        status: 401,
+        message: "Unauthorized worker request.",
+      },
+    };
+  }
+
+  const livekitConfig = getLivekitConfig();
+
+  if (!livekitConfig) {
+    return {
+      error: {
+        status: 500,
+        message:
+          "Missing LiveKit env. Set LIVEKIT_API_KEY, LIVEKIT_API_SECRET, and NEXT_PUBLIC_LIVEKIT_URL or LIVEKIT_URL.",
+      },
+    };
+  }
+
+  const room = await prisma.room.findUnique({
+    where: { code: input.roomCode },
+    select: {
+      id: true,
+      code: true,
+      title: true,
+      status: true,
+      livekitRoomName: true,
+    },
+  });
+
+  if (!room) {
+    return {
+      error: {
+        status: 404,
+        message: "Room not found.",
+      },
+    };
+  }
+
+  if (room.status === RoomStatus.ENDED) {
+    return {
+      error: {
+        status: 409,
+        message: "Room has already ended.",
+      },
+    };
+  }
+
+  const workerIdentity =
+    input.workerIdentity?.trim() || `cv-worker-${room.code.toLowerCase()}`;
+  const workerName = input.workerName?.trim() || "CV Worker";
+
+  const accessToken = new AccessToken(livekitConfig.apiKey, livekitConfig.apiSecret, {
+    identity: workerIdentity,
+    name: workerName,
+    metadata: JSON.stringify({
+      role: "SERVICE_WORKER",
+      roomCode: room.code,
+    }),
+    ttl: "2h",
+  });
+
+  accessToken.addGrant({
+    roomJoin: true,
+    room: room.livekitRoomName,
+    canPublish: false,
+    canSubscribe: true,
+    canPublishData: false,
+    hidden: true,
+  });
+
+  const token = await accessToken.toJwt();
+
+  return {
+    data: {
+      token,
+      serverUrl: livekitConfig.serverUrl,
+      room: {
+        id: room.id,
+        code: room.code,
+        title: room.title,
+        livekitRoomName: room.livekitRoomName,
+      },
+      worker: {
+        identity: workerIdentity,
+        name: workerName,
+      },
+    },
+  };
 }

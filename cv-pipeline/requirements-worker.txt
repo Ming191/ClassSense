@@ -1,0 +1,12 @@
+numpy>=2.0.0
+opencv-python>=4.10.0
+mediapipe>=0.10.33
+sixdrepnet>=0.1.6
+emotiefflib>=1.1.1
+requests>=2.32.0
+livekit>=1.0.0
+
+# Force CPU PyTorch wheels to avoid huge CUDA payloads in container builds.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu

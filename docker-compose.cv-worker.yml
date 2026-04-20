@@ -1,0 +1,50 @@
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: classsense-livekit
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+    volumes:
+      - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
+    restart: unless-stopped
+
+  cv-worker:
+    build:
+      context: ./cv-pipeline
+      dockerfile: Dockerfile.worker
+    container_name: classsense-cv-worker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      CLASSSENSE_BASE_URL: ${CLASSSENSE_BASE_URL:-http://host.docker.internal:3000}
+      CLASSSENSE_SESSION_ID: ${CLASSSENSE_SESSION_ID:-}
+      WORKER_AUTH_SECRET: ${WORKER_AUTH_SECRET:-}
+      WORKER_IDENTITY: ${WORKER_IDENTITY:-}
+      WORKER_NAME: ${WORKER_NAME:-CV Worker}
+      WORKER_EMAIL: ${WORKER_EMAIL:-cv-worker@classsense.local}
+      PUBLISH_INTERVAL: ${PUBLISH_INTERVAL:-3.0}
+      LIVEKIT_URL_OVERRIDE: ${LIVEKIT_URL_OVERRIDE:-ws://livekit:7880}
+    command:
+      - python
+      - scripts/livekit_worker_e2e.py
+      - --base-url
+      - ${CLASSSENSE_BASE_URL:-http://host.docker.internal:3000}
+      - --session-id
+      - ${CLASSSENSE_SESSION_ID:-}
+      - --worker-secret
+      - ${WORKER_AUTH_SECRET:-}
+      - --worker-identity
+      - ${WORKER_IDENTITY:-}
+      - --worker-name
+      - ${WORKER_NAME:-CV Worker}
+      - --worker-email
+      - ${WORKER_EMAIL:-cv-worker@classsense.local}
+      - --publish-interval
+      - ${PUBLISH_INTERVAL:-3.0}
+      - --livekit-url-override
+      - ${LIVEKIT_URL_OVERRIDE:-ws://livekit:7880}
+    depends_on:
+      - livekit
+    restart: unless-stopped

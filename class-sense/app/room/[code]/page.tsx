@@ -31,9 +31,17 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { getFirebaseClientFirestore } from "@/lib/firebase/client";
+import {
+  normalizeSessionDashboardDocId,
+  SESSION_DASHBOARDS_COLLECTION,
+  SESSION_HCI_EVENTS_SUBCOLLECTION,
+} from "@/lib/firebase/realtime";
+import { SessionHciEvent } from "@/lib/types/hci";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { collection, doc, limit, onSnapshot, orderBy, query } from "firebase/firestore";
 import { RoomEvent, Track } from "livekit-client";
 
 type RoomTokenPayload = {
@@ -251,8 +259,12 @@ export default function RoomPage(): ReactElement {
   const [joinStage, setJoinStage] = useState<JoinStage>("prejoin");
   const [joinChoices, setJoinChoices] = useState<LocalUserChoices | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [studentPrompt, setStudentPrompt] = useState<SessionHciEvent | null>(null);
+  const [breakSuggestion, setBreakSuggestion] = useState<SessionHciEvent | null>(null);
   const requestControllerRef = useRef<AbortController | null>(null);
   const layoutContext = useCreateLayoutContext();
+
+  const isHost = session?.participant.role === "HOST";
 
   const preJoinDefaults = useMemo<Partial<LocalUserChoices>>(
     () => ({
@@ -291,6 +303,55 @@ export default function RoomPage(): ReactElement {
       requestControllerRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (!session?.room.code || !session?.participant.id) {
+      return;
+    }
+
+    const firestore = getFirebaseClientFirestore();
+    const dashboardDocRef = doc(
+      firestore,
+      SESSION_DASHBOARDS_COLLECTION,
+      normalizeSessionDashboardDocId(session.room.code)
+    );
+    const hciQuery = query(
+      collection(dashboardDocRef, SESSION_HCI_EVENTS_SUBCOLLECTION),
+      orderBy("createdAt", "desc"),
+      limit(25)
+    );
+
+    const unsubscribe = onSnapshot(
+      hciQuery,
+      (snapshot) => {
+        const events = snapshot.docs
+          .map((docSnapshot) => docSnapshot.data() as SessionHciEvent)
+          .filter((event) => Boolean(event?.id && event?.type && event?.createdAt));
+
+        const latestPrompt = events.find(
+          (event) =>
+            event.type === "CONFUSION_PROMPT" &&
+            event.targetStudentId === session.participant.id
+        );
+        const latestBreak = events.find((event) => event.type === "BREAK_SUGGESTION");
+
+        setStudentPrompt(latestPrompt ?? null);
+        setBreakSuggestion(latestBreak ?? null);
+      },
+      () => {
+        // Ignore listener errors to keep room media resilient.
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [session?.participant.id, session?.room.code]);
+
+  async function handleRaiseHandFromPrompt(): Promise<void> {
+    setStudentPrompt(null);
+    // TODO: Wire real raise-hand action.
+  }
 
   async function handlePreJoinSubmit(values: LocalUserChoices): Promise<void> {
     requestControllerRef.current?.abort();
@@ -474,12 +535,27 @@ export default function RoomPage(): ReactElement {
                   <CardTitle className="text-base text-foreground sm:text-lg">{session.room.title}</CardTitle>
                 </div>
                 <CardAction>
-                  <Badge
-                    variant="outline"
-                    className="h-7 border-border bg-background/70 px-3 text-[0.7rem] tracking-[0.2em] text-foreground"
-                  >
-                    {session.room.code}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    {isHost ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        onClick={() => {
+                          window.open(`/dashboard/${encodeURIComponent(session.room.code)}`, "_blank");
+                        }}
+                      >
+                        Open dashboard
+                      </Button>
+                    ) : null}
+                    <Badge
+                      variant="outline"
+                      className="h-7 border-border bg-background/70 px-3 text-[0.7rem] tracking-[0.2em] text-foreground"
+                    >
+                      {session.room.code}
+                    </Badge>
+                  </div>
                 </CardAction>
               </CardHeader>
             </Card>
@@ -497,6 +573,46 @@ export default function RoomPage(): ReactElement {
                 <div aria-hidden className="h-full rounded-lg border border-transparent" />
               )}
             </div>
+
+            {breakSuggestion ? (
+              <Alert className="border-emerald-500/35 bg-emerald-500/10 text-emerald-100">
+                <AlertTitle>Break suggestion</AlertTitle>
+                <AlertDescription>
+                  {breakSuggestion.message || "Teacher suggests a short break."}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+
+            {studentPrompt ? (
+              <Alert className="border-amber-500/35 bg-amber-500/10 text-amber-100">
+                <AlertTitle>Need help?</AlertTitle>
+                <AlertDescription className="space-y-2">
+                  <p>{studentPrompt.message}</p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        void handleRaiseHandFromPrompt();
+                      }}
+                    >
+                      Raise hand
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setStudentPrompt(null);
+                      }}
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                </AlertDescription>
+              </Alert>
+            ) : null}
 
             <Card className="min-h-0 flex-1 border-border/70 bg-card/45 shadow-xl shadow-black/20">
               <CardContent className="min-h-0 flex-1 p-3">

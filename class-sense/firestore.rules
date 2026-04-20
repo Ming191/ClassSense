@@ -1,6 +1,12 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // NOTE: Temporary permissive rules for realtime dashboard bring-up.
+    // Tighten these rules before production.
+    match /session_dashboards/{dashboardId} {
+      allow read, write: if true;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

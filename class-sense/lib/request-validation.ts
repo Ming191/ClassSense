@@ -3,6 +3,8 @@ import { z } from "zod";
 const MAX_ROOM_TITLE_LENGTH = 120;
 const MAX_PARTICIPANT_NAME_LENGTH = 80;
 const MAX_EMAIL_LENGTH = 254;
+const MAX_EMOTION_LENGTH = 64;
+const MAX_WORKER_ID_LENGTH = 120;
 
 function optionalTrimmedString(maxLength: number, fieldName: string) {
   return z
@@ -50,6 +52,41 @@ export const sessionTokenRequestBodySchema = z
   .object({
     participantName: optionalTrimmedString(MAX_PARTICIPANT_NAME_LENGTH, "participantName"),
     participantEmail: optionalEmailString("participantEmail"),
+  })
+  .strict();
+
+export const workerTokenRequestBodySchema = z
+  .object({
+    workerIdentity: optionalTrimmedString(MAX_WORKER_ID_LENGTH, "workerIdentity"),
+    workerName: optionalTrimmedString(MAX_PARTICIPANT_NAME_LENGTH, "workerName"),
+  })
+  .strict();
+
+export const signalIngestionBodySchema = z
+  .object({
+    participantId: z.string().trim().min(1, "participantId is required."),
+    engagementScore: z
+      .number()
+      .min(0, "engagementScore must be between 0 and 1.")
+      .max(1, "engagementScore must be between 0 and 1."),
+    cameraEnabled: z.boolean().optional(),
+    microphoneEnabled: z.boolean().optional(),
+    faceDetected: z.boolean().optional(),
+    emotion: z
+      .string()
+      .trim()
+      .max(MAX_EMOTION_LENGTH, `emotion must be at most ${MAX_EMOTION_LENGTH} characters.`)
+      .optional()
+      .transform((value) => {
+        if (!value || value.length === 0) {
+          return undefined;
+        }
+
+        return value;
+      }),
+    yaw: z.number().optional(),
+    pitch: z.number().optional(),
+    roll: z.number().optional(),
   })
   .strict();
 
