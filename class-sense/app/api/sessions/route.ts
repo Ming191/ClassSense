@@ -1,5 +1,4 @@
 import { createSession, listSessions } from '@/lib/server/session-store'
-import { publishSessionLifecycleEvent } from '@/lib/server/lifecycle-publisher'
 import { ensureEventIngestorStarted } from '@/lib/server/event-ingestor'
 
 type CreateSessionBody = {
@@ -18,17 +17,6 @@ async function parseJsonBody(request: Request): Promise<CreateSessionBody | null
   }
 }
 
-function generateSessionId(): string {
-  try {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return crypto.randomUUID()
-    }
-  } catch {
-    // noop
-  }
-
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
 
 function resolveStatusFilter(value: string | null): 'active' | 'completed' | undefined {
   if (value === 'active' || value === 'completed') {
@@ -54,16 +42,7 @@ export async function POST(request: Request) {
     return jsonError('Malformed JSON body', 400)
   }
 
-  const id = generateSessionId()
-  const roomName = `classsense-${id}`
-  const session = await createSession({ id, name: body.name, roomName })
-
-  await publishSessionLifecycleEvent({
-    type: 'session.created',
-    sessionId: session.id,
-    roomName: session.roomName,
-    timestamp: new Date().toISOString(),
-  })
+  const session = await createSession({ name: body.name })
 
   return Response.json({ session }, { status: 201 })
 }

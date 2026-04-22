@@ -1,6 +1,7 @@
 import { SessionStatus as PrismaSessionStatus } from '@prisma/client'
 
 import { prisma } from '@/lib/server/prisma'
+import { publishSessionLifecycleEvent } from '@/lib/server/lifecycle-publisher'
 
 export type ParticipantRole = 'teacher' | 'student' | 'service'
 
@@ -38,17 +39,39 @@ function toSessionDto(session: {
   }
 }
 
-export async function createSession(input: { id: string; name?: string; roomName: string }): Promise<Session> {
+export function generateSessionId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+  } catch {
+    // noop
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+export async function createSession(input: { id?: string; name?: string; roomName?: string }): Promise<Session> {
+  const id = input.id || generateSessionId()
+  const roomName = input.roomName || `classsense-${id}`
   const created = await prisma.session.create({
     data: {
-      id: input.id,
-      name: input.name?.trim() || `Session ${input.id}`,
-      roomName: input.roomName,
+      id,
+      name: input.name?.trim() || `Session ${id}`,
+      roomName,
       status: PrismaSessionStatus.ACTIVE,
     },
   })
 
-  return toSessionDto(created)
+  const session = toSessionDto(created)
+
+  await publishSessionLifecycleEvent({
+    type: 'session.created',
+    sessionId: session.id,
+    roomName: session.roomName,
+    timestamp: new Date().toISOString(),
+  })
+
+  return session
 }
 
 export async function getSession(id: string): Promise<Session | undefined> {

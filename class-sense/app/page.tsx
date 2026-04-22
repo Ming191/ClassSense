@@ -17,31 +17,13 @@ function asText(value: string | string[] | undefined): string {
   return value ?? ''
 }
 
-function generateSessionId(): string {
-  try {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return crypto.randomUUID()
-    }
-  } catch {
-    // noop
-  }
-
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
-
 async function createSessionAction(formData: FormData) {
   'use server'
 
   const rawName = formData.get('sessionName')
   const name = typeof rawName === 'string' ? rawName.trim() : ''
 
-  const id = generateSessionId()
-  const roomName = `classsense-${id}`
-  const session = await createSession({
-    id,
-    name,
-    roomName,
-  })
+  const session = await createSession({ name })
 
   const { redirect } = await import('next/navigation')
   redirect(`/?created=${encodeURIComponent(session.id)}`)
