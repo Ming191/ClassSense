@@ -73,7 +73,7 @@ function roleGrants(role: ParticipantRole) {
 
 export async function POST(request: Request, context: { params: Params }) {
   const { id } = await context.params
-  const session = getSession(id)
+  const session = await getSession(id)
   if (!session) {
     return jsonError('Session not found', 404)
   }

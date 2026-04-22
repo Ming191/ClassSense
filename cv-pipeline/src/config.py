@@ -22,9 +22,12 @@ def _as_int(value: str | None, default: int) -> int:
 @dataclass(slots=True)
 class Settings:
     livekit_url: str
-    livekit_token: str
-    session_id: str
     redis_url: str
+    web_base_url: str = "http://web:3000"
+    worker_identity: str = "cv-worker"
+    worker_retry_base_ms: int = 500
+    worker_retry_max_ms: int = 10000
+    session_lifecycle_channel: str = "session:lifecycle"
     frame_format: str = "bgr"
     target_width: int = 0
     target_height: int = 0
@@ -35,9 +38,14 @@ class Settings:
 def load_settings() -> Settings:
     settings = Settings(
         livekit_url=(os.getenv("LIVEKIT_URL") or "").strip(),
-        livekit_token=(os.getenv("LIVEKIT_TOKEN") or "").strip(),
-        session_id=(os.getenv("SESSION_ID") or "").strip(),
         redis_url=(os.getenv("REDIS_URL") or "redis://localhost:6379/0").strip(),
+        web_base_url=(os.getenv("WEB_BASE_URL") or "http://web:3000").strip(),
+        worker_identity=(os.getenv("WORKER_IDENTITY") or "cv-worker").strip(),
+        worker_retry_base_ms=max(1, _as_int(os.getenv("WORKER_RETRY_BASE_MS"), 500)),
+        worker_retry_max_ms=max(1, _as_int(os.getenv("WORKER_RETRY_MAX_MS"), 10000)),
+        session_lifecycle_channel=(
+            os.getenv("SESSION_LIFECYCLE_CHANNEL") or "session:lifecycle"
+        ).strip(),
         frame_format=(os.getenv("FRAME_FORMAT") or "bgr").strip().lower(),
         target_width=_as_int(os.getenv("TARGET_WIDTH"), 0),
         target_height=_as_int(os.getenv("TARGET_HEIGHT"), 0),
@@ -45,21 +53,16 @@ def load_settings() -> Settings:
         publish_gaze_points=_as_bool(os.getenv("PUBLISH_GAZE_POINTS"), False),
     )
 
-    missing = [
-        name
-        for name, value in (
-            ("LIVEKIT_URL", settings.livekit_url),
-            ("LIVEKIT_TOKEN", settings.livekit_token),
-            ("SESSION_ID", settings.session_id),
-        )
-        if not value
-    ]
-    if missing:
-        raise ValueError(
-            f"Missing required environment variables: {', '.join(missing)}"
-        )
-
     if settings.frame_format not in {"bgr", "rgba", "i420", "auto"}:
         raise ValueError("FRAME_FORMAT must be one of: bgr, rgba, i420, auto")
+
+    if settings.worker_retry_base_ms > settings.worker_retry_max_ms:
+        raise ValueError("WORKER_RETRY_BASE_MS must be <= WORKER_RETRY_MAX_MS")
+    if not settings.worker_identity:
+        raise ValueError("WORKER_IDENTITY must not be empty")
+    if not settings.web_base_url:
+        raise ValueError("WEB_BASE_URL must not be empty")
+    if not settings.session_lifecycle_channel:
+        raise ValueError("SESSION_LIFECYCLE_CHANNEL must not be empty")
 
     return settings

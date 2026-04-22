@@ -31,6 +31,7 @@ services:
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
       LIVEKIT_URL_PUBLIC: ${LIVEKIT_URL_PUBLIC}
       REDIS_URL: ${REDIS_URL}
+      DATABASE_URL: ${DATABASE_URL:-file:/app/prisma/dev.db}
     depends_on:
       - livekit
       - redis
@@ -45,9 +46,9 @@ services:
     environment:
       PYTHONPATH: /app
       LIVEKIT_URL: ws://livekit:7880
-      LIVEKIT_TOKEN: ${LIVEKIT_TOKEN}
-      SESSION_ID: ${SESSION_ID}
       REDIS_URL: ${REDIS_URL}
+      WEB_BASE_URL: http://web:3000
+      WORKER_IDENTITY: ${WORKER_IDENTITY:-cv-worker}
       PUBLISH_GAZE_POINTS: "true"
     volumes:
       - ./cv-pipeline/models:/app/models

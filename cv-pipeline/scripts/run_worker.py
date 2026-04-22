@@ -4,12 +4,11 @@ import asyncio
 import signal
 
 from src.config import load_settings
-from src.worker.cv_worker import CVWorker
+from src.worker.cv_worker import CVWorker, CVWorkerLifecycleRunner
 
 
 async def main() -> None:
     settings = load_settings()
-    worker = CVWorker(settings)
     stop_event = asyncio.Event()
 
     loop = asyncio.get_running_loop()
@@ -19,11 +18,8 @@ async def main() -> None:
         except NotImplementedError:
             pass
 
-    await worker.connect()
-    try:
-        await stop_event.wait()
-    finally:
-        await worker.close()
+    runner = CVWorkerLifecycleRunner(settings)
+    await runner.run(stop_event)
 
 
 if __name__ == "__main__":

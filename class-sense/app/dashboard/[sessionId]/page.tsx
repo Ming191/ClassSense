@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { ApiError, endSession } from '@/lib/client/api'
+import { ApiError, endSession, getSessionEvents } from '@/lib/client/api'
 
 type DashboardPageProps = {
   params: Promise<{ sessionId: string }>
@@ -154,6 +154,59 @@ export default function SessionDashboardPage({ params }: DashboardPageProps) {
       setError(message)
     } finally {
       setEnding(false)
+    }
+  }, [sessionId])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void getSessionEvents(sessionId, { type: 'all', limit: LOG_LIMIT })
+      .then((response) => {
+        if (cancelled) {
+          return
+        }
+
+        setError(null)
+        setHeatmapEvents([])
+
+        const scoreHistory: StreamLogItem[] = response.scoreEvents.map((event) => ({
+          id: event.id,
+          type: 'score',
+          timestamp: event.createdAt,
+          payload: event.payload,
+        }))
+
+        const hciHistory: StreamLogItem[] = response.hciEvents.map((event) => ({
+          id: event.id,
+          type: 'hci',
+          timestamp: event.createdAt,
+          payload: event.payload,
+        }))
+
+        setScoreEvents(scoreHistory.slice(0, 30))
+        setHciEvents(hciHistory.slice(0, 30))
+
+        const mergedLogs = [...scoreHistory, ...hciHistory]
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+          .slice(0, LOG_LIMIT)
+        setLogs(mergedLogs)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) {
+          return
+        }
+
+        const message =
+          err instanceof ApiError
+            ? `Failed to load event history: ${err.message} (HTTP ${err.status})`
+            : err instanceof Error
+              ? `Failed to load event history: ${err.message}`
+              : 'Failed to load event history.'
+        setError(message)
+      })
+
+    return () => {
+      cancelled = true
     }
   }, [sessionId])
 

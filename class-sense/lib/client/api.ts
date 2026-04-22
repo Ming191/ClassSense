@@ -25,6 +25,23 @@ export type TokenResponse = {
   role: ParticipantRole
 }
 
+export type PersistedSessionEvent = {
+  id: string
+  sessionId: string
+  createdAt: string
+  payload: unknown
+}
+
+export type SessionEventsResponse = {
+  scoreEvents: PersistedSessionEvent[]
+  hciEvents: PersistedSessionEvent[]
+}
+
+export type GetSessionEventsOptions = {
+  type?: 'score' | 'hci' | 'all'
+  limit?: number
+}
+
 export class ApiError extends Error {
   status: number
   details?: unknown
@@ -95,4 +112,25 @@ export async function endSession(sessionId: string): Promise<Session> {
     body: JSON.stringify({ status: 'completed' }),
   })
   return data.session
+}
+
+export async function getSessionEvents(
+  sessionId: string,
+  options?: GetSessionEventsOptions,
+): Promise<SessionEventsResponse> {
+  const query = new URLSearchParams()
+  if (options?.type) {
+    query.set('type', options.type)
+  }
+  if (options?.limit !== undefined) {
+    query.set('limit', String(options.limit))
+  }
+
+  const querySuffix = query.toString() ? `?${query.toString()}` : ''
+  return requestJson<SessionEventsResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/events${querySuffix}`,
+    {
+      method: 'GET',
+    },
+  )
 }

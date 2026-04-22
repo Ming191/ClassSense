@@ -1,4 +1,6 @@
 import { createSession, listSessions } from '@/lib/server/session-store'
+import { publishSessionLifecycleEvent } from '@/lib/server/lifecycle-publisher'
+import { ensureEventIngestorStarted } from '@/lib/server/event-ingestor'
 
 type CreateSessionBody = {
   name?: string
@@ -28,11 +30,25 @@ function generateSessionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-export async function GET() {
-  return Response.json({ sessions: listSessions() })
+function resolveStatusFilter(value: string | null): 'active' | 'completed' | undefined {
+  if (value === 'active' || value === 'completed') {
+    return value
+  }
+  return undefined
+}
+
+export async function GET(request: Request) {
+  ensureEventIngestorStarted()
+
+  const url = new URL(request.url)
+  const status = resolveStatusFilter(url.searchParams.get('status'))
+  const sessions = await listSessions(status ? { status } : undefined)
+  return Response.json({ sessions })
 }
 
 export async function POST(request: Request) {
+  ensureEventIngestorStarted()
+
   const body = await parseJsonBody(request)
   if (body === null) {
     return jsonError('Malformed JSON body', 400)
@@ -40,7 +56,14 @@ export async function POST(request: Request) {
 
   const id = generateSessionId()
   const roomName = `classsense-${id}`
-  const session = createSession({ id, name: body.name, roomName })
+  const session = await createSession({ id, name: body.name, roomName })
+
+  await publishSessionLifecycleEvent({
+    type: 'session.created',
+    sessionId: session.id,
+    roomName: session.roomName,
+    timestamp: new Date().toISOString(),
+  })
 
   return Response.json({ session }, { status: 201 })
 }

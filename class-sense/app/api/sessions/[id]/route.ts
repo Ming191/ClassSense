@@ -1,4 +1,6 @@
 import { getSession, markSessionCompleted } from '@/lib/server/session-store'
+import { publishSessionLifecycleEvent } from '@/lib/server/lifecycle-publisher'
+import { ensureEventIngestorStarted } from '@/lib/server/event-ingestor'
 
 type Params = Promise<{ id: string }>
 
@@ -19,8 +21,10 @@ async function parseJsonBody(request: Request): Promise<PatchBody | null> {
 }
 
 export async function GET(_request: Request, context: { params: Params }) {
+  ensureEventIngestorStarted()
+
   const { id } = await context.params
-  const session = getSession(id)
+  const session = await getSession(id)
 
   if (!session) {
     return jsonError('Session not found', 404)
@@ -30,8 +34,10 @@ export async function GET(_request: Request, context: { params: Params }) {
 }
 
 export async function PATCH(request: Request, context: { params: Params }) {
+  ensureEventIngestorStarted()
+
   const { id } = await context.params
-  const session = getSession(id)
+  const session = await getSession(id)
   if (!session) {
     return jsonError('Session not found', 404)
   }
@@ -45,10 +51,17 @@ export async function PATCH(request: Request, context: { params: Params }) {
     return jsonError("Only status: 'completed' is supported", 400)
   }
 
-  const updated = markSessionCompleted(id)
+  const updated = await markSessionCompleted(id)
   if (!updated) {
     return jsonError('Session not found', 404)
   }
+
+  await publishSessionLifecycleEvent({
+    type: 'session.completed',
+    sessionId: updated.id,
+    roomName: updated.roomName,
+    timestamp: new Date().toISOString(),
+  })
 
   return Response.json({ session: updated })
 }

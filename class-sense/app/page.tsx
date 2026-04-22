@@ -37,7 +37,7 @@ async function createSessionAction(formData: FormData) {
 
   const id = generateSessionId()
   const roomName = `classsense-${id}`
-  const session = createSession({
+  const session = await createSession({
     id,
     name,
     roomName,
@@ -82,7 +82,7 @@ export default async function HomePage({ searchParams }: HomePageProps) {
   const params = await searchParams
   const createdId = asText(params.created)
 
-  const sessions = listSessions()
+  const sessions = await listSessions()
   const createdSession = sessions.find((session) => session.id === createdId)
 
   return (

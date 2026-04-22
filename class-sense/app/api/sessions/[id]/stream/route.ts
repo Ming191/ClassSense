@@ -1,6 +1,7 @@
 import { createClient, type RedisClientType } from 'redis'
 
 import { getRedisUrl } from '@/lib/server/env'
+import { ensureEventIngestorStarted } from '@/lib/server/event-ingestor'
 import { getSession } from '@/lib/server/session-store'
 
 export const runtime = 'nodejs'
@@ -26,8 +27,10 @@ function channelToEvent(channel: string, id: string): 'score' | 'hci' | 'heatmap
 }
 
 export async function GET(request: Request, context: { params: Params }) {
+  ensureEventIngestorStarted()
+
   const { id } = await context.params
-  const session = getSession(id)
+  const session = await getSession(id)
   if (!session) {
     return jsonError('Session not found', 404)
   }
@@ -50,14 +53,56 @@ export async function GET(request: Request, context: { params: Params }) {
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let closed = false
+      let cleanedUp = false
+
       const writeEvent = (event: string, data: unknown) => {
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+        if (closed) {
+          return
+        }
+
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+        } catch {
+          closed = true
+        }
+      }
+
+      const closeController = () => {
+        if (closed) {
+          return
+        }
+
+        closed = true
+        try {
+          controller.close()
+        } catch {
+          // already closed
+        }
+      }
+
+      const cleanup = async () => {
+        if (cleanedUp) {
+          return
+        }
+
+        cleanedUp = true
+        try {
+          await subscriber.unsubscribe(channels)
+          await subscriber.quit()
+        } catch {
+          // noop
+        }
       }
 
       writeEvent('ready', { sessionId: id, roomName: session.roomName })
 
       try {
         await subscriber.subscribe(channels, (message, channel) => {
+          if (closed) {
+            return
+          }
+
           const event = channelToEvent(channel, id)
           if (!event) {
             return
@@ -73,18 +118,24 @@ export async function GET(request: Request, context: { params: Params }) {
           writeEvent(event, payload)
         })
       } catch {
-        controller.error(new Error('Redis subscription failed'))
+        if (!closed) {
+          closed = true
+          try {
+            controller.error(new Error('Redis subscription failed'))
+          } catch {
+            // already closed
+          }
+        }
       }
 
-      request.signal.addEventListener('abort', async () => {
-        try {
-          await subscriber.unsubscribe(channels)
-          await subscriber.quit()
-        } catch {
-          // noop
-        }
-        controller.close()
-      })
+      request.signal.addEventListener(
+        'abort',
+        () => {
+          closed = true
+          void cleanup().finally(closeController)
+        },
+        { once: true },
+      )
     },
     async cancel() {
       try {
